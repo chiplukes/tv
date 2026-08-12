@@ -1,0 +1,29 @@
+[project]
+name = "tv"
+version = "0.1.0"
+description = "TIFF viewer for viewing and analyzing TIFF images from the Big Sky Camera"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib",
+    "numpy",
+    "pillow",
+    "tifffile",
+]
+
+[project.scripts]
+tv = "tv.__main__:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
