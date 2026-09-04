@@ -5,6 +5,7 @@ import math
 import os
 import tkinter as tk
 from tkinter import filedialog, ttk
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
@@ -135,6 +136,11 @@ class ZoomableCfaViewer(tk.Tk):
         self.last_canvas_w = 0
         self.last_canvas_h = 0
 
+        # --- Pixel Marking State ---
+        self.marked_pixels = set()  # set of (x, y) raw array coords marked for annotation
+        self.mark_min_pixel_size = 8  # minimum on-screen pixel size (px) before mark overlays are drawn
+        self.GOTO_MIN_ZOOM = 16.0  # zoom level "Goto Pixel" zooms in to (unless already zoomed in further)
+
         # --- Bayer Pattern Definitions ---
         self.BAYER_PATTERNS = {
             "RGGB": {(0, 0): "R", (0, 1): "Gr", (1, 0): "Gb", (1, 1): "B"},
@@ -152,6 +158,7 @@ class ZoomableCfaViewer(tk.Tk):
         self._build_dark_image_panel()
         self._build_color_panel()
         self._build_flat_panel()
+        self._build_goto_panel()
         self._build_debug_panel()
         self._build_canvas()
 
@@ -240,7 +247,7 @@ class ZoomableCfaViewer(tk.Tk):
 
         ttk.Label(
             gamma_frame,
-            text="Drag=pan | Shift+Drag=zoom | Ctrl+Drag=histogram | Scroll=zoom",
+            text="Drag=pan | Shift+Drag=zoom | Ctrl+Drag=histogram | Scroll=zoom | Right-click=mark pixel",
             font=("Arial", 9),
             foreground="#666",
         ).pack(side=tk.LEFT, padx=10)
@@ -551,6 +558,55 @@ class ZoomableCfaViewer(tk.Tk):
         self.flat_info_label = ttk.Label(flat_frame, text="", font=("Courier", 9), foreground="#666")
         self.flat_info_label.pack(side=tk.LEFT, padx=(10, 5))
 
+    def _build_goto_panel(self):
+        goto_frame = ttk.Frame(self, padding="5 5 5 5")
+        goto_frame.pack(side=tk.TOP, fill=tk.X, padx=5)
+
+        ttk.Label(goto_frame, text="Goto Pixel:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(10, 10))
+
+        ttk.Label(goto_frame, text="X:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(0, 5))
+        self.goto_x_var = tk.IntVar(value=0)
+        self.goto_x_entry = ttk.Entry(goto_frame, textvariable=self.goto_x_var, width=8, font=("Courier", 10))
+        self.goto_x_entry.pack(side=tk.LEFT, padx=(0, 10))
+        self.goto_x_entry.bind("<Return>", self.on_goto_pixel)
+
+        ttk.Label(goto_frame, text="Y:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(0, 5))
+        self.goto_y_var = tk.IntVar(value=0)
+        self.goto_y_entry = ttk.Entry(goto_frame, textvariable=self.goto_y_var, width=8, font=("Courier", 10))
+        self.goto_y_entry.pack(side=tk.LEFT, padx=(0, 10))
+        self.goto_y_entry.bind("<Return>", self.on_goto_pixel)
+
+        self.goto_button = ttk.Button(goto_frame, text="Go", command=self.on_goto_pixel)
+        self.goto_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.goto_status_label = ttk.Label(goto_frame, text="", font=("Courier", 9), foreground="#666")
+        self.goto_status_label.pack(side=tk.LEFT, padx=(10, 5))
+
+    def on_goto_pixel(self, event=None):
+        """Center the view on the typed (x, y) pixel, zooming in if needed to see it clearly."""
+        try:
+            x = int(self.goto_x_var.get())
+            y = int(self.goto_y_var.get())
+        except (ValueError, tk.TclError):
+            self.goto_status_label.config(text="Invalid coordinates", foreground="red")
+            return
+
+        if not (0 <= x < self.full_cols and 0 <= y < self.full_rows):
+            self.goto_status_label.config(
+                text=f"Out of range (0-{self.full_cols - 1}, 0-{self.full_rows - 1})", foreground="red"
+            )
+            return
+
+        # Zoom in enough to see individual pixels (matches the mark overlay's
+        # own visibility threshold), but don't zoom OUT if already closer in.
+        self.zoom = max(self.zoom, self.GOTO_MIN_ZOOM)
+        self.view_x = x - (self.display_w / self.zoom) / 2
+        self.view_y = y - (self.display_h / self.zoom) / 2
+        self._clamp_view()
+        self.redraw()
+        self._refresh_hover()
+        self.goto_status_label.config(text=f"Jumped to ({x}, {y})", foreground="#060")
+
     def _build_debug_panel(self):
         debug_frame = ttk.Frame(self, padding="5 5 5 5")
         debug_frame.pack(side=tk.TOP, fill=tk.X, padx=5)
@@ -658,6 +714,7 @@ class ZoomableCfaViewer(tk.Tk):
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_down)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
+        self.canvas.bind("<Button-3>", self.on_right_click)
 
         self.bind("<MouseWheel>", self.on_scroll)  # Windows/Mac
         self.bind("<Button-4>", self.on_scroll)  # Linux (scroll up)
@@ -792,6 +849,31 @@ class ZoomableCfaViewer(tk.Tk):
             "slice_w": data_slice.shape[1],
         }
 
+        # Exact raw-array <-> screen mapping for the image about to be drawn.
+        # This must match whatever _render_image is about to produce: the
+        # Color debayer-cell path (2x2 Bayer quads collapsed into one output
+        # pixel) has a different raw-pixel-per-output-pixel scale than the
+        # Mono / "Show CFA" raw-pixel paths, so on_hover/right-click/mark
+        # overlays need to know which one is in play to land on the right
+        # pixel instead of drifting with zoom/pan.
+        is_cell_mode = not self.flat_mode_enabled and self.cfa_mode == "Color" and not self.show_bayer_pixels
+        if is_cell_mode:
+            cell_step = downsample * 2
+            grid_h = max(1, (y_end - y_start) // cell_step)
+            grid_w = max(1, (x_end - x_start) // cell_step)
+            raw_span_h = grid_h * cell_step
+            raw_span_w = grid_w * cell_step
+        else:
+            raw_span_h = data_slice.shape[0] * downsample
+            raw_span_w = data_slice.shape[1] * downsample
+
+        self._render_geom = {
+            "x_start": x_start,
+            "y_start": y_start,
+            "raw_span_w": raw_span_w,
+            "raw_span_h": raw_span_h,
+        }
+
         if self.row_correction_enabled and self.row_corr_averages is not None:
             corr_slice = self.row_corr_averages[y_start:y_end:downsample]
             data_slice = data_slice.astype(np.int32) - corr_slice[:, np.newaxis].astype(np.int32)
@@ -805,6 +887,9 @@ class ZoomableCfaViewer(tk.Tk):
 
         if self.flat_mode_enabled:
             self._draw_flat_scale_bar()
+
+        if self.marked_pixels:
+            self._draw_pixel_marks()
 
     def _render_image(self, data_slice, x_start, y_start, x_end, y_end, downsample, display_w, display_h):
         """Choose the right rendering path and return a PIL Image."""
@@ -1235,6 +1320,91 @@ class ZoomableCfaViewer(tk.Tk):
         self.canvas.create_text(label_x, y0 + bar_h // 2, text=mid_lbl, anchor="w", fill="white", font=("Courier", 9))
         self.canvas.create_text(label_x, y0 + bar_h, text=bot_lbl, anchor="sw", fill="white", font=("Courier", 9))
 
+    # ------------------------------------------------------------------
+    # Pixel marking / annotation overlay
+    # ------------------------------------------------------------------
+
+    # Colours matched to the histogram's per-channel colour scheme.
+    MARK_CHANNEL_COLORS = {"R": "red", "Gr": "green", "Gb": "darkgreen", "B": "blue"}
+
+    def _raw_to_screen(self, x_arr, y_arr):
+        """Map raw array coords to canvas screen coords (top-left of that pixel).
+
+        Uses the exact geometry `redraw()` used for the image currently on
+        screen (`self._render_geom`) rather than re-deriving it from
+        view_x/zoom, since the latter doesn't account for the renderer's own
+        start-coordinate rounding or (in Color debayer mode) its 2x2-cell
+        grid — both of which would otherwise make the overlay drift out of
+        registration with the actual pixel as you zoom/pan.
+        """
+        geom = getattr(self, "_render_geom", None)
+        if geom is None:
+            return (
+                self.display_x + (x_arr - self.view_x) * self.zoom,
+                self.display_y + (y_arr - self.view_y) * self.zoom,
+            )
+        return (
+            self.display_x + (x_arr - geom["x_start"]) * self.display_w / geom["raw_span_w"],
+            self.display_y + (y_arr - geom["y_start"]) * self.display_h / geom["raw_span_h"],
+        )
+
+    def _draw_pixel_marks(self):
+        """Overlay highlight boxes + value readouts for marked pixels.
+
+        Only drawn once individual pixels are large enough on screen to hold
+        a border and legible text. In Mono mode each mark is a single raw
+        pixel; in Color mode a mark expands to its full 2x2 Bayer quad so all
+        four component values can be shown together. Skipped in Flat mode,
+        whose display doesn't represent individual raw pixel positions.
+        """
+        if self.flat_mode_enabled:
+            return
+        geom = getattr(self, "_render_geom", None)
+        if geom is None:
+            return
+
+        px_w = self.display_w / geom["raw_span_w"]
+        px_h = self.display_h / geom["raw_span_h"]
+        if min(px_w, px_h) < self.mark_min_pixel_size:
+            return
+
+        font_size = max(6, min(14, int(min(px_w, px_h) / 7)))
+        font = ("Courier", font_size, "bold")
+
+        # Visible raw-coordinate bounds (with a small margin for partially visible pixels)
+        view_left = geom["x_start"] - 2
+        view_top = geom["y_start"] - 2
+        view_right = geom["x_start"] + geom["raw_span_w"] + 2
+        view_bottom = geom["y_start"] + geom["raw_span_h"] + 2
+
+        if self.cfa_mode == "Mono":
+            for mx, my in self.marked_pixels:
+                if not (view_left <= mx <= view_right and view_top <= my <= view_bottom):
+                    continue
+                x0, y0 = self._raw_to_screen(mx, my)
+                x1, y1 = x0 + px_w, y0 + px_h
+                self.canvas.create_rectangle(x0, y0, x1, y1, outline="red", width=1)
+                value = int(self.data[my, mx])
+                self.canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=str(value), fill="red", font=font)
+        else:
+            # Expand each mark to its enclosing 2x2 Bayer quad, de-duplicating
+            # quads shared by multiple marks.
+            quads = {(mx - mx % 2, my - my % 2) for mx, my in self.marked_pixels}
+            for qx, qy in quads:
+                if not (view_left <= qx <= view_right and view_top <= qy <= view_bottom):
+                    continue
+                for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
+                    rx, ry = qx + dx, qy + dy
+                    if rx >= self.full_cols or ry >= self.full_rows:
+                        continue
+                    comp = self.get_bayer_component(rx, ry)
+                    color = self.MARK_CHANNEL_COLORS.get(comp, "white")
+                    x0, y0 = self._raw_to_screen(rx, ry)
+                    x1, y1 = x0 + px_w, y0 + px_h
+                    self.canvas.create_rectangle(x0, y0, x1, y1, outline=color, width=1)
+                    value = int(self.data[ry, rx])
+                    self.canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=str(value), fill="black", font=font)
+
     def on_flat_mode_toggle(self):
         self.flat_mode_enabled = self.flat_mode_var.get()
         self.redraw()
@@ -1373,35 +1543,75 @@ class ZoomableCfaViewer(tk.Tk):
             self.row_avg_label.config(text="Row Avg: N/A")
             self.flat_dev_label.config(text="")
 
-    def on_hover(self, event):
-        """Handles mouse motion over the canvas to update info."""
+    def _event_to_array_coords(self, event):
+        """Map a canvas event position to (x, y) raw array coords, or None if outside the image."""
         if not (
             self.display_x <= event.x < self.display_x + self.display_w
             and self.display_y <= event.y < self.display_y + self.display_h
         ):
-            self._update_info(-1, -1)
-            return
+            return None
 
         adj_x = event.x - self.display_x
         adj_y = event.y - self.display_y
 
-        if self.display_w > 0 and self.display_h > 0 and hasattr(self, "_last_render_params"):
-            x_start = self._last_render_params["x_start"]
-            y_start = self._last_render_params["y_start"]
-            downsample = self._last_render_params["downsample"]
-            slice_w = self._last_render_params["slice_w"]
-            slice_h = self._last_render_params["slice_h"]
-
-            slice_x = int(adj_x * slice_w / self.display_w)
-            slice_y = int(adj_y * slice_h / self.display_h)
-
-            x_arr = x_start + slice_x * downsample
-            y_arr = y_start + slice_y * downsample
+        # Use the renderer's own geometry (see redraw()) rather than
+        # `_last_render_params`'s raw data-slice width: in Color debayer-cell
+        # mode the on-screen grid is 2x2-Bayer-quad-per-cell, not
+        # raw-pixel-per-cell, so scaling by the raw slice width there picked
+        # the wrong pixel (roughly 2x off in each axis).
+        geom = getattr(self, "_render_geom", None)
+        if self.display_w > 0 and self.display_h > 0 and geom is not None:
+            x_arr = geom["x_start"] + int(adj_x * geom["raw_span_w"] / self.display_w)
+            y_arr = geom["y_start"] + int(adj_y * geom["raw_span_h"] / self.display_h)
         else:
             x_arr = int(self.view_x + adj_x / self.zoom)
             y_arr = int(self.view_y + adj_y / self.zoom)
 
-        self._update_info(x_arr, y_arr)
+        if 0 <= x_arr < self.full_cols and 0 <= y_arr < self.full_rows:
+            return x_arr, y_arr
+        return None
+
+    def on_hover(self, event):
+        """Handles mouse motion over the canvas to update info."""
+        coords = self._event_to_array_coords(event)
+        if coords is None:
+            self._update_info(-1, -1)
+        else:
+            self._update_info(*coords)
+
+    def on_right_click(self, event):
+        """Shows a context menu to mark/unmark the pixel under the cursor."""
+        coords = self._event_to_array_coords(event)
+        if coords is None:
+            return
+        x_arr, y_arr = coords
+
+        menu = tk.Menu(self.canvas, tearoff=0)
+        is_marked = (x_arr, y_arr) in self.marked_pixels
+        label = "Unmark Pixel" if is_marked else "Mark Pixel"
+        menu.add_command(
+            label=f"{label} ({x_arr}, {y_arr})",
+            command=lambda: self._toggle_mark(x_arr, y_arr),
+        )
+        if self.marked_pixels:
+            menu.add_separator()
+            menu.add_command(label="Clear All Marks", command=self._clear_all_marks)
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _toggle_mark(self, x_arr, y_arr):
+        if (x_arr, y_arr) in self.marked_pixels:
+            self.marked_pixels.discard((x_arr, y_arr))
+        else:
+            self.marked_pixels.add((x_arr, y_arr))
+        self.redraw()
+
+    def _clear_all_marks(self):
+        self.marked_pixels.clear()
+        self.redraw()
 
     # ------------------------------------------------------------------
     # Control callbacks
@@ -1578,13 +1788,15 @@ class ZoomableCfaViewer(tk.Tk):
     # File loading (open / reload)
     # ------------------------------------------------------------------
 
-    def _set_data(self, cfa_data, filename=None, preserve_view=False, preserve_bit_range=False):
+    def _set_data(self, cfa_data, filename=None, preserve_view=False, preserve_bit_range=False, preserve_marks=False):
         """Replace the active image with new data and reset dependent state.
 
         When preserve_bit_range is True the current MSB/LSB selection is kept
         and applied to the new data.  When preserve_view is True the current
         zoom/pan are kept (clamped to the new image bounds) instead of
-        re-fitting the viewport.
+        re-fitting the viewport.  When preserve_marks is True, marked pixels
+        are kept (dropping any that fall outside the new image bounds);
+        otherwise all marks are cleared.
         """
         self._raw_full_bits = cfa_data
         self._dark_full_bits = None
@@ -1625,6 +1837,14 @@ class ZoomableCfaViewer(tk.Tk):
         # Reset flat-field cache
         self._flat_deviation = None
         self._flat_params = None
+
+        # Reset (or filter) marked pixels
+        if preserve_marks:
+            self.marked_pixels = {
+                (x, y) for x, y in self.marked_pixels if 0 <= x < self.full_cols and 0 <= y < self.full_rows
+            }
+        else:
+            self.marked_pixels = set()
 
         self.filename = filename
         if filename:
@@ -1673,7 +1893,7 @@ class ZoomableCfaViewer(tk.Tk):
         try:
             data = read_tiff_2d(self.filename)
             print(f"Reloading file: {self.filename}")
-            self._set_data(data, self.filename, preserve_view=True, preserve_bit_range=True)
+            self._set_data(data, self.filename, preserve_view=True, preserve_bit_range=True, preserve_marks=True)
         except Exception as e:
             print(f"Error reloading file: {e}")
 
@@ -2053,17 +2273,11 @@ class ZoomableCfaViewer(tk.Tk):
     def _refresh_hover(self):
         x = self.canvas.winfo_pointerx() - self.canvas.winfo_rootx()
         y = self.canvas.winfo_pointery() - self.canvas.winfo_rooty()
-        if (
-            self.display_x <= x < self.display_x + self.display_w
-            and self.display_y <= y < self.display_y + self.display_h
-        ):
-            adj_x = x - self.display_x
-            adj_y = y - self.display_y
-            x_arr = int(self.view_x + adj_x / self.zoom)
-            y_arr = int(self.view_y + adj_y / self.zoom)
-            self._update_info(x_arr, y_arr)
-        else:
+        coords = self._event_to_array_coords(SimpleNamespace(x=x, y=y))
+        if coords is None:
             self._update_info(-1, -1)
+        else:
+            self._update_info(*coords)
 
     def on_scroll(self, event):
         if event.num == 5 or event.delta < 0:
