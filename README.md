@@ -9,7 +9,7 @@ A TIFF viewer for viewing and analyzing raw Bayer CFA images.
 - **Show CFA mode** — toggle to display individual Bayer-coloured pixels instead of debayered colour
 - **Colour / Mono rendering** — debayered colour view or raw grayscale
 - **Gamma correction** — adjustable gamma for intensity scaling
-- **Colour adjustment** — per-channel R / G / B multipliers
+- **Colour adjustment** — per-Bayer-channel R / Gr / Gb / B gain multipliers
 - **Dark pixel correction** — per-row dark subtraction from configurable dark columns
 - **Flat-field analysis** — deviation heat-map for a single Bayer channel with block averaging, top/bottom half references, and a colour scale bar
 - **Hover inspection** — real-time coordinate, component, and value readout that snaps to enabled channels

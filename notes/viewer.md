@@ -12,13 +12,18 @@
 
 The viewer holds the full raw 2D `numpy` array in memory as `data_raw`. The active working array `data` is either the same object or a dark-image-subtracted copy. All rendering reads from `data`, so dark image subtraction is transparent to every feature.
 
+## Opening / Reloading Files
+
+- **Open File…** loads a new TIFF/DNG file, resetting dark-image state, bit range, and viewport (re-fitted to the window).
+- **Reload** re-reads the currently open file from disk (no-op when viewing mock data). It preserves the current bit range and view (zoom/pan), clamped to the new image bounds.
+
 ## GUI Layout (top to bottom)
 
 1. **Info panel** — coordinates, Bayer component, raw/subtracted/corrected value, dark average
-2. **Gamma / mode panel** — gamma entry, CFA Mode (Color/Mono), Bayer pattern selector, Show CFA checkbox, Reset View button
+2. **Gamma / mode panel** — gamma entry, CFA Mode (Color/Mono), Bayer pattern selector, Show CFA checkbox, Open File / Reload / Reset View buttons
 3. **Dark correction panel** — enable checkbox, dark column range entries, Bayer channel checkboxes (R, Gr, Gb, B)
 4. **Dark image panel** — Subtract Dark Image checkbox, Load Dark Image button, filename label
-5. **Colour adjust panel** — R/G/B multiplier entries, Export View button
+5. **Colour adjust panel** — R/Gr/Gb/B gain multiplier entries, Export View button
 6. **Flat-field panel** — Flat checkbox, block size, display mode (Percentage/Absolute), Dev %, Dev DN, info label
 7. **Canvas** — the image display area
 
@@ -38,7 +43,7 @@ All colour paths use `_gamma_scale_rgb()` for normalisation, gamma correction, a
 
 ### Bayer Debayering
 
-The viewer does not perform full demosaicing. Instead it groups 2×2 Bayer cells and maps R, avg(Gr, Gb), B to the RGB channels. This is fast and sufficient for inspection purposes.
+The viewer does not perform full demosaicing. Instead it groups 2×2 Bayer cells and maps R, avg(Gr, Gb), B to the RGB channels. This is fast and sufficient for inspection purposes. Each Bayer channel (R, Gr, Gb, B) has its own independent gain multiplier applied before the green channels are averaged.
 
 ### Bayer Channel Toggles
 

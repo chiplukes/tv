@@ -31,6 +31,7 @@ class ZoomableCfaViewer(tk.Tk):
         """
         super().__init__()
 
+        self.filename = filename
         if filename:
             basename = os.path.basename(filename)
             self.title(f"tv - {basename}")
@@ -77,9 +78,10 @@ class ZoomableCfaViewer(tk.Tk):
         self.show_bayer_gb = True
         self.show_bayer_b = True
 
-        # Color adjustment multipliers
+        # Color adjustment multipliers (per Bayer channel)
         self.color_adjust_r = 1.0
-        self.color_adjust_g = 1.0
+        self.color_adjust_gr = 1.0
+        self.color_adjust_gb = 1.0
         self.color_adjust_b = 1.0
 
         # Row correction settings (dark columns on left and right edges)
@@ -227,8 +229,14 @@ class ZoomableCfaViewer(tk.Tk):
         )
         self.show_bayer_pixels_check.pack(side=tk.LEFT, padx=(20, 10))
 
+        self.open_file_button = ttk.Button(gamma_frame, text="Open File…", command=self.on_open_file)
+        self.open_file_button.pack(side=tk.LEFT, padx=(20, 5))
+
+        self.reload_button = ttk.Button(gamma_frame, text="Reload", command=self.on_reload_file)
+        self.reload_button.pack(side=tk.LEFT, padx=(0, 5))
+
         self.reset_button = ttk.Button(gamma_frame, text="Reset View", command=self.on_reset_view)
-        self.reset_button.pack(side=tk.LEFT, padx=(20, 10))
+        self.reset_button.pack(side=tk.LEFT, padx=(0, 10))
 
         ttk.Label(
             gamma_frame,
@@ -245,18 +253,14 @@ class ZoomableCfaViewer(tk.Tk):
 
         ttk.Label(bitdepth_frame, text="MSB:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(0, 5))
         self.bit_msb_var = tk.IntVar(value=self.bit_msb)
-        self.bit_msb_entry = ttk.Entry(
-            bitdepth_frame, textvariable=self.bit_msb_var, width=4, font=("Courier", 10)
-        )
+        self.bit_msb_entry = ttk.Entry(bitdepth_frame, textvariable=self.bit_msb_var, width=4, font=("Courier", 10))
         self.bit_msb_entry.pack(side=tk.LEFT, padx=(0, 10))
         self.bit_msb_entry.bind("<Return>", self.on_bit_range_change)
         self.bit_msb_entry.bind("<FocusOut>", self.on_bit_range_change)
 
         ttk.Label(bitdepth_frame, text="LSB:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(0, 5))
         self.bit_lsb_var = tk.IntVar(value=self.bit_lsb)
-        self.bit_lsb_entry = ttk.Entry(
-            bitdepth_frame, textvariable=self.bit_lsb_var, width=4, font=("Courier", 10)
-        )
+        self.bit_lsb_entry = ttk.Entry(bitdepth_frame, textvariable=self.bit_lsb_var, width=4, font=("Courier", 10))
         self.bit_lsb_entry.pack(side=tk.LEFT, padx=(0, 10))
         self.bit_lsb_entry.bind("<Return>", self.on_bit_range_change)
         self.bit_lsb_entry.bind("<FocusOut>", self.on_bit_range_change)
@@ -399,28 +403,39 @@ class ZoomableCfaViewer(tk.Tk):
         self.load_dark_image_button.pack(side=tk.LEFT, padx=(10, 10))
 
         self.dark_image_label = ttk.Label(
-            di_frame, text="No dark image loaded",
-            font=("Courier", 9), foreground="#666",
+            di_frame,
+            text="No dark image loaded",
+            font=("Courier", 9),
+            foreground="#666",
         )
         self.dark_image_label.pack(side=tk.LEFT, padx=(10, 5))
 
         ttk.Separator(di_frame, orient=tk.VERTICAL).pack(
-            side=tk.LEFT, fill=tk.Y, padx=(15, 15), pady=2,
+            side=tk.LEFT,
+            fill=tk.Y,
+            padx=(15, 15),
+            pady=2,
         )
         ttk.Label(
-            di_frame, text="Hist \u03c3:", font=("Courier", 10),
+            di_frame,
+            text="Hist \u03c3:",
+            font=("Courier", 10),
         ).pack(side=tk.LEFT, padx=(0, 5))
         self.hist_sigma_var = tk.DoubleVar(value=self.hist_sigma)
         self.hist_sigma_entry = ttk.Entry(
-            di_frame, textvariable=self.hist_sigma_var,
-            width=5, font=("Courier", 10),
+            di_frame,
+            textvariable=self.hist_sigma_var,
+            width=5,
+            font=("Courier", 10),
         )
         self.hist_sigma_entry.pack(side=tk.LEFT, padx=(0, 5))
         self.hist_sigma_entry.bind(
-            "<Return>", self._on_hist_sigma_change,
+            "<Return>",
+            self._on_hist_sigma_change,
         )
         self.hist_sigma_entry.bind(
-            "<FocusOut>", self._on_hist_sigma_change,
+            "<FocusOut>",
+            self._on_hist_sigma_change,
         )
 
     def _recalculate_active_data(self):
@@ -454,14 +469,23 @@ class ZoomableCfaViewer(tk.Tk):
         self.color_adjust_r_entry.bind("<Return>", self.on_color_adjust_change)
         self.color_adjust_r_entry.bind("<FocusOut>", self.on_color_adjust_change)
 
-        ttk.Label(color_frame, text="G:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(0, 5))
-        self.color_adjust_g_var = tk.DoubleVar(value=self.color_adjust_g)
-        self.color_adjust_g_entry = ttk.Entry(
-            color_frame, textvariable=self.color_adjust_g_var, width=6, font=("Courier", 10)
+        ttk.Label(color_frame, text="Gr:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(0, 5))
+        self.color_adjust_gr_var = tk.DoubleVar(value=self.color_adjust_gr)
+        self.color_adjust_gr_entry = ttk.Entry(
+            color_frame, textvariable=self.color_adjust_gr_var, width=6, font=("Courier", 10)
         )
-        self.color_adjust_g_entry.pack(side=tk.LEFT, padx=(0, 10))
-        self.color_adjust_g_entry.bind("<Return>", self.on_color_adjust_change)
-        self.color_adjust_g_entry.bind("<FocusOut>", self.on_color_adjust_change)
+        self.color_adjust_gr_entry.pack(side=tk.LEFT, padx=(0, 10))
+        self.color_adjust_gr_entry.bind("<Return>", self.on_color_adjust_change)
+        self.color_adjust_gr_entry.bind("<FocusOut>", self.on_color_adjust_change)
+
+        ttk.Label(color_frame, text="Gb:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(0, 5))
+        self.color_adjust_gb_var = tk.DoubleVar(value=self.color_adjust_gb)
+        self.color_adjust_gb_entry = ttk.Entry(
+            color_frame, textvariable=self.color_adjust_gb_var, width=6, font=("Courier", 10)
+        )
+        self.color_adjust_gb_entry.pack(side=tk.LEFT, padx=(0, 10))
+        self.color_adjust_gb_entry.bind("<Return>", self.on_color_adjust_change)
+        self.color_adjust_gb_entry.bind("<FocusOut>", self.on_color_adjust_change)
 
         ttk.Label(color_frame, text="B:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(0, 5))
         self.color_adjust_b_var = tk.DoubleVar(value=self.color_adjust_b)
@@ -535,9 +559,7 @@ class ZoomableCfaViewer(tk.Tk):
 
         ttk.Label(debug_frame, text="Row:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(0, 5))
         self.debug_row_var = tk.IntVar(value=0)
-        self.debug_row_entry = ttk.Entry(
-            debug_frame, textvariable=self.debug_row_var, width=8, font=("Courier", 10)
-        )
+        self.debug_row_entry = ttk.Entry(debug_frame, textvariable=self.debug_row_var, width=8, font=("Courier", 10))
         self.debug_row_entry.pack(side=tk.LEFT, padx=(0, 10))
 
         ttk.Label(debug_frame, text="Start:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(0, 5))
@@ -549,9 +571,7 @@ class ZoomableCfaViewer(tk.Tk):
 
         ttk.Label(debug_frame, text="End:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(0, 5))
         self.debug_end_var = tk.IntVar(value=100)
-        self.debug_end_entry = ttk.Entry(
-            debug_frame, textvariable=self.debug_end_var, width=8, font=("Courier", 10)
-        )
+        self.debug_end_entry = ttk.Entry(debug_frame, textvariable=self.debug_end_var, width=8, font=("Courier", 10))
         self.debug_end_entry.pack(side=tk.LEFT, padx=(0, 10))
 
         self.debug_dump_button = ttk.Button(debug_frame, text="Dump", command=self.on_debug_dump)
@@ -582,11 +602,13 @@ class ZoomableCfaViewer(tk.Tk):
         # Even row -> pattern positions (0,0) and (0,1); Odd row -> (1,0) and (1,1)
         row_parity = row % 2
         even_comp = self.BAYER_PATTERN[(row_parity, 0)]  # component at even columns
-        odd_comp = self.BAYER_PATTERN[(row_parity, 1)]   # component at odd columns
+        odd_comp = self.BAYER_PATTERN[(row_parity, 1)]  # component at odd columns
 
         comp_enabled = {
-            "R": self.show_bayer_r, "Gr": self.show_bayer_gr,
-            "Gb": self.show_bayer_gb, "B": self.show_bayer_b,
+            "R": self.show_bayer_r,
+            "Gr": self.show_bayer_gr,
+            "Gb": self.show_bayer_gb,
+            "B": self.show_bayer_b,
         }
         even_enabled = comp_enabled.get(even_comp, True)
         odd_enabled = comp_enabled.get(odd_comp, True)
@@ -797,24 +819,28 @@ class ZoomableCfaViewer(tk.Tk):
         else:
             return self._render_mono(data_slice)
 
-    def _gamma_scale_rgb(self, r_slice, g_slice, b_slice):
+    def _gamma_scale_rgb(self, r_slice, gr_slice, gb_slice, b_slice):
         """Normalize, gamma-correct, colour-adjust, and return (r, g, b) uint8 arrays."""
         min_val, max_val = self.data_min, self.data_max
         if max_val == min_val:
             return (
                 np.zeros_like(r_slice, dtype=np.uint8),
-                np.zeros_like(g_slice, dtype=np.uint8),
+                np.zeros_like(gr_slice, dtype=np.uint8),
                 np.zeros_like(b_slice, dtype=np.uint8),
             )
 
         inv_gamma = 1.0 / self.gamma
         r_norm = np.clip((r_slice.astype(np.float32) - min_val) / (max_val - min_val), 0, 1)
-        g_norm = np.clip((g_slice.astype(np.float32) - min_val) / (max_val - min_val), 0, 1)
+        gr_norm = np.clip((gr_slice.astype(np.float32) - min_val) / (max_val - min_val), 0, 1)
+        gb_norm = np.clip((gb_slice.astype(np.float32) - min_val) / (max_val - min_val), 0, 1)
         b_norm = np.clip((b_slice.astype(np.float32) - min_val) / (max_val - min_val), 0, 1)
 
         r_gamma = np.clip(np.power(r_norm, inv_gamma) * self.color_adjust_r, 0, 1)
-        g_gamma = np.clip(np.power(g_norm, inv_gamma) * self.color_adjust_g, 0, 1)
+        gr_gamma = np.clip(np.power(gr_norm, inv_gamma) * self.color_adjust_gr, 0, 1)
+        gb_gamma = np.clip(np.power(gb_norm, inv_gamma) * self.color_adjust_gb, 0, 1)
         b_gamma = np.clip(np.power(b_norm, inv_gamma) * self.color_adjust_b, 0, 1)
+
+        g_gamma = (gr_gamma + gb_gamma) * 0.5
 
         return (
             (255.0 * r_gamma).astype(np.uint8),
@@ -876,8 +902,7 @@ class ZoomableCfaViewer(tk.Tk):
         if not self.show_bayer_b:
             b_slice = np.zeros_like(b_slice)
 
-        g_slice = ((gr_slice.astype(np.uint32) + gb_slice.astype(np.uint32)) // 2).astype(np.uint16)
-        r_scaled, g_scaled, b_scaled = self._gamma_scale_rgb(r_slice, g_slice, b_slice)
+        r_scaled, g_scaled, b_scaled = self._gamma_scale_rgb(r_slice, gr_slice, gb_slice, b_slice)
 
         rgb_img = np.zeros((h_cells, w_cells, 3), dtype=np.uint8)
         rgb_img[:, :, 0] = r_scaled
@@ -924,15 +949,15 @@ class ZoomableCfaViewer(tk.Tk):
             rgb_img[is_r, 2] = r_base
 
         if self.show_bayer_gr:
-            g_adj = np.clip(scaled_slice[is_gr].astype(np.float32) * self.color_adjust_g, 0, 255).astype(np.uint8)
-            g_base = np.clip(base_intensity[is_gr].astype(np.float32) * self.color_adjust_g, 0, 255).astype(np.uint8)
+            g_adj = np.clip(scaled_slice[is_gr].astype(np.float32) * self.color_adjust_gr, 0, 255).astype(np.uint8)
+            g_base = np.clip(base_intensity[is_gr].astype(np.float32) * self.color_adjust_gr, 0, 255).astype(np.uint8)
             rgb_img[is_gr, 0] = g_base
             rgb_img[is_gr, 1] = g_adj
             rgb_img[is_gr, 2] = g_base
 
         if self.show_bayer_gb:
-            g_adj = np.clip(scaled_slice[is_gb].astype(np.float32) * self.color_adjust_g, 0, 255).astype(np.uint8)
-            g_base = np.clip(base_intensity[is_gb].astype(np.float32) * self.color_adjust_g, 0, 255).astype(np.uint8)
+            g_adj = np.clip(scaled_slice[is_gb].astype(np.float32) * self.color_adjust_gb, 0, 255).astype(np.uint8)
+            g_base = np.clip(base_intensity[is_gb].astype(np.float32) * self.color_adjust_gb, 0, 255).astype(np.uint8)
             rgb_img[is_gb, 0] = g_base
             rgb_img[is_gb, 1] = g_adj
             rgb_img[is_gb, 2] = g_base
@@ -977,8 +1002,7 @@ class ZoomableCfaViewer(tk.Tk):
         if not self.show_bayer_b:
             b_slice = np.zeros_like(b_slice)
 
-        g_slice = ((gr_slice.astype(np.uint32) + gb_slice.astype(np.uint32)) // 2).astype(np.uint16)
-        r_scaled, g_scaled, b_scaled = self._gamma_scale_rgb(r_slice, g_slice, b_slice)
+        r_scaled, g_scaled, b_scaled = self._gamma_scale_rgb(r_slice, gr_slice, gb_slice, b_slice)
 
         rgb_img = np.zeros((h_cells, w_cells, 3), dtype=np.uint8)
         rgb_img[:, :, 0] = r_scaled
@@ -1308,8 +1332,7 @@ class ZoomableCfaViewer(tk.Tk):
                 if self.dark_image_subtract_enabled and self.dark_image_data is not None:
                     dark_value = self.dark_image_data[y_arr, x_arr]
                     self.value_label.config(
-                        text=f"Raw: {raw_value} | Dark: {dark_value} | Sub: {active_value}"
-                        f" | Corr: {corrected_value}"
+                        text=f"Raw: {raw_value} | Dark: {dark_value} | Sub: {active_value} | Corr: {corrected_value}"
                     )
                 else:
                     self.value_label.config(text=f"Raw: {raw_value} | Corr: {corrected_value}")
@@ -1457,16 +1480,19 @@ class ZoomableCfaViewer(tk.Tk):
     def on_color_adjust_change(self, event=None):
         try:
             r_val = float(self.color_adjust_r_var.get())
-            g_val = float(self.color_adjust_g_var.get())
+            gr_val = float(self.color_adjust_gr_var.get())
+            gb_val = float(self.color_adjust_gb_var.get())
             b_val = float(self.color_adjust_b_var.get())
-            if r_val > 0 and g_val > 0 and b_val > 0:
+            if r_val > 0 and gr_val > 0 and gb_val > 0 and b_val > 0:
                 self.color_adjust_r = r_val
-                self.color_adjust_g = g_val
+                self.color_adjust_gr = gr_val
+                self.color_adjust_gb = gb_val
                 self.color_adjust_b = b_val
                 self.redraw()
         except ValueError:
             self.color_adjust_r_var.set(self.color_adjust_r)
-            self.color_adjust_g_var.set(self.color_adjust_g)
+            self.color_adjust_gr_var.set(self.color_adjust_gr)
+            self.color_adjust_gb_var.set(self.color_adjust_gb)
             self.color_adjust_b_var.set(self.color_adjust_b)
 
     def on_export_view(self):
@@ -1549,6 +1575,109 @@ class ZoomableCfaViewer(tk.Tk):
         self.zoom_to_fit()
 
     # ------------------------------------------------------------------
+    # File loading (open / reload)
+    # ------------------------------------------------------------------
+
+    def _set_data(self, cfa_data, filename=None, preserve_view=False, preserve_bit_range=False):
+        """Replace the active image with new data and reset dependent state.
+
+        When preserve_bit_range is True the current MSB/LSB selection is kept
+        and applied to the new data.  When preserve_view is True the current
+        zoom/pan are kept (clamped to the new image bounds) instead of
+        re-fitting the viewport.
+        """
+        self._raw_full_bits = cfa_data
+        self._dark_full_bits = None
+
+        if not preserve_bit_range:
+            self.bit_msb = 15
+            self.bit_lsb = 0
+            self.bit_msb_var.set(15)
+            self.bit_lsb_var.set(0)
+            self._update_bit_depth_label()
+
+        self.data_raw = self._extract_bit_range(self._raw_full_bits)
+        self.data = self.data_raw
+
+        if self.data.ndim != 2:
+            raise ValueError(f"Input array must be 2D, but got {self.data.ndim} dimensions.")
+
+        self.full_rows, self.full_cols = self.data.shape
+
+        print("Calculating data range for intensity scaling...")
+        self.data_min = float(self.data.min())
+        self.data_max = float(self.data.max())
+        print(f"Data range: {self.data_min} to {self.data_max}")
+
+        # Reset dark image state
+        self.dark_image_data = None
+        self.dark_image_subtract_enabled = False
+        self.dark_image_path = None
+        self.dark_image_subtract_var.set(False)
+        self.dark_image_subtract_check.config(state=tk.DISABLED)
+        self.dark_image_label.config(text="No dark image loaded", foreground="#666")
+
+        # Reset row-correction cache (recompute if currently enabled)
+        self.row_corr_averages = None
+        if self.row_correction_enabled:
+            self.calculate_row_corr_averages()
+
+        # Reset flat-field cache
+        self._flat_deviation = None
+        self._flat_params = None
+
+        self.filename = filename
+        if filename:
+            basename = os.path.basename(filename)
+            self.title(f"tv - {basename}")
+        else:
+            self.title("tv")
+
+        if preserve_view:
+            self._clamp_view()
+            self.redraw()
+        else:
+            self.zoom_to_fit()
+
+    def _clamp_view(self):
+        """Clamp view_x/view_y so the viewport stays within the image bounds."""
+        if self.display_w <= 0 or self.display_h <= 0:
+            self.zoom_to_fit()
+            return
+        arr_w = self.display_w / self.zoom
+        arr_h = self.display_h / self.zoom
+        self.view_x = max(0.0, min(self.view_x, max(0.0, self.full_cols - arr_w)))
+        self.view_y = max(0.0, min(self.view_y, max(0.0, self.full_rows - arr_h)))
+
+    def on_open_file(self):
+        """Open a file dialog and load a new image."""
+        file_path = filedialog.askopenfilename(
+            title="Select TIFF/DNG file to view",
+            filetypes=[("TIFF files", "*.tif;*.tiff;*.dng"), ("All files", "*.*")],
+        )
+        if not file_path:
+            return
+        try:
+            data = read_tiff_2d(file_path)
+            print(f"Loading file: {file_path}")
+            print(f"Loaded image with shape: {data.shape}, dtype: {data.dtype}")
+            self._set_data(data, file_path)
+        except Exception as e:
+            print(f"Error loading file: {e}")
+
+    def on_reload_file(self):
+        """Re-read the currently open file from disk."""
+        if not self.filename:
+            print("No file to reload (viewing mock data).")
+            return
+        try:
+            data = read_tiff_2d(self.filename)
+            print(f"Reloading file: {self.filename}")
+            self._set_data(data, self.filename, preserve_view=True, preserve_bit_range=True)
+        except Exception as e:
+            print(f"Error reloading file: {e}")
+
+    # ------------------------------------------------------------------
     # Dark pixel correction
     # ------------------------------------------------------------------
 
@@ -1563,10 +1692,7 @@ class ZoomableCfaViewer(tk.Tk):
             print(f"Invalid row correction params: offset={self.row_corr_offset}, width={self.row_corr_width}")
             return None
 
-        print(
-            f"Calculating row correction averages from cols {left_start}:{left_end}"
-            f" and {right_start}:{right_end}..."
-        )
+        print(f"Calculating row correction averages from cols {left_start}:{left_end} and {right_start}:{right_end}...")
         left_cols = self.data[:, left_start:left_end]
         right_cols = self.data[:, right_start:right_end]
         combined = np.hstack([left_cols, right_cols])
@@ -1681,14 +1807,13 @@ class ZoomableCfaViewer(tk.Tk):
 
         channels = ["R", "Gr", "Gb", "B"]
         channel_colors = {
-            "R": "red", "Gr": "green",
-            "Gb": "darkgreen", "B": "blue",
+            "R": "red",
+            "Gr": "green",
+            "Gb": "darkgreen",
+            "B": "blue",
         }
 
-        show_sub = (
-            self.dark_image_subtract_enabled
-            and self.dark_image_data is not None
-        )
+        show_sub = self.dark_image_subtract_enabled and self.dark_image_data is not None
         dark_region = None
         if show_sub:
             dark_region = self.dark_image_data[y0:y1, x0:x1]
@@ -1696,7 +1821,8 @@ class ZoomableCfaViewer(tk.Tk):
         n_hist_rows = 2 if show_sub else 1
         n_cols = len(channels)
         fig, axes = plt.subplots(
-            n_hist_rows, n_cols,
+            n_hist_rows,
+            n_cols,
             figsize=(4 * n_cols, 3.5 * n_hist_rows),
             squeeze=False,
         )
@@ -1709,10 +1835,7 @@ class ZoomableCfaViewer(tk.Tk):
                 if comp == ch_name:
                     ch_pos = pos
                     break
-            mask = (
-                (row_grid % 2 == ch_pos[0])
-                & (col_grid % 2 == ch_pos[1])
-            )
+            mask = (row_grid % 2 == ch_pos[0]) & (col_grid % 2 == ch_pos[1])
             raw_vals = region_raw[mask].astype(np.float64)
             color = channel_colors[ch_name]
 
@@ -1724,15 +1847,15 @@ class ZoomableCfaViewer(tk.Tk):
                 lo = mean_r - sigma * std_r
                 hi = mean_r + sigma * std_r
                 ax.hist(
-                    raw_vals, bins="auto", color=color,
-                    alpha=0.85, edgecolor="black",
+                    raw_vals,
+                    bins="auto",
+                    color=color,
+                    alpha=0.85,
+                    edgecolor="black",
                     linewidth=0.3,
                 )
                 ax.set_xlim(lo, hi)
-                ax.set_title(
-                    f"{ch_name} — Raw\n"
-                    f"\u03bc={mean_r:.1f}  \u03c3={std_r:.1f}"
-                )
+                ax.set_title(f"{ch_name} — Raw\n\u03bc={mean_r:.1f}  \u03c3={std_r:.1f}")
             else:
                 ax.set_title(f"{ch_name} — Raw (no data)")
             ax.set_xlabel("DN")
@@ -1740,10 +1863,7 @@ class ZoomableCfaViewer(tk.Tk):
 
             # --- Subtracted histogram ---
             if show_sub:
-                sub_vals = (
-                    raw_vals.astype(np.int64)
-                    - dark_region[mask].astype(np.int64)
-                ).astype(np.float64)
+                sub_vals = (raw_vals.astype(np.int64) - dark_region[mask].astype(np.int64)).astype(np.float64)
                 ax2 = axes[1, ci]
                 if sub_vals.size > 0:
                     mean_s = np.mean(sub_vals)
@@ -1751,25 +1871,21 @@ class ZoomableCfaViewer(tk.Tk):
                     lo_s = mean_s - sigma * std_s
                     hi_s = mean_s + sigma * std_s
                     ax2.hist(
-                        sub_vals, bins="auto", color=color,
-                        alpha=0.85, edgecolor="black",
+                        sub_vals,
+                        bins="auto",
+                        color=color,
+                        alpha=0.85,
+                        edgecolor="black",
                         linewidth=0.3,
                     )
                     ax2.set_xlim(lo_s, hi_s)
-                    ax2.set_title(
-                        f"{ch_name} — Sub\n"
-                        f"\u03bc={mean_s:.1f}  \u03c3={std_s:.1f}"
-                    )
+                    ax2.set_title(f"{ch_name} — Sub\n\u03bc={mean_s:.1f}  \u03c3={std_s:.1f}")
                 else:
                     ax2.set_title(f"{ch_name} — Sub (no data)")
                 ax2.set_xlabel("DN")
                 ax2.set_ylabel("Count")
 
-        region_label = (
-            f"Region ({x0}, {y0})\u2013({x1}, {y1})  "
-            f"[{x1 - x0} \u00d7 {y1 - y0}]  "
-            f"(\u00b1{sigma:.1f}\u03c3)"
-        )
+        region_label = f"Region ({x0}, {y0})\u2013({x1}, {y1})  [{x1 - x0} \u00d7 {y1 - y0}]  (\u00b1{sigma:.1f}\u03c3)"
         fig.suptitle(region_label, fontsize=11)
         fig.tight_layout()
         plt.show(block=False)
@@ -2014,6 +2130,19 @@ class ZoomableCfaViewer(tk.Tk):
 # ------------------------------------------------------------------
 # File loading
 # ------------------------------------------------------------------
+
+
+def read_tiff_2d(file_path):
+    """Read a TIFF/DNG file and return it as a 2D NumPy array.
+
+    Raises ValueError if the image is not 2D.
+    """
+    data = imread(file_path)
+    if hasattr(data, "base") and data.base is not None:
+        data = np.array(data, copy=True)
+    if data.ndim != 2:
+        raise ValueError(f"Expected 2D array, got {data.ndim}D array with shape {data.shape}")
+    return data
 
 
 def load_tiff_file():
