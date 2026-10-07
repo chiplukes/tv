@@ -11,6 +11,8 @@ import numpy as np
 from PIL import Image
 from tifffile import imread
 
+IMAGE_FILETYPES = [("TIFF files", ("*.tif", "*.tiff", "*.dng")), ("All files", "*")]
+
 
 class ZoomableCfaViewer(tk.Tk):
     """
@@ -1873,7 +1875,7 @@ class ZoomableCfaViewer(tk.Tk):
         """Open a file dialog and load a new image."""
         file_path = filedialog.askopenfilename(
             title="Select TIFF/DNG file to view",
-            filetypes=[("TIFF files", "*.tif;*.tiff;*.dng"), ("All files", "*.*")],
+            filetypes=IMAGE_FILETYPES,
         )
         if not file_path:
             return
@@ -1961,7 +1963,7 @@ class ZoomableCfaViewer(tk.Tk):
         """Open a file dialog to load a dark calibration TIFF."""
         file_path = filedialog.askopenfilename(
             title="Select dark calibration TIFF",
-            filetypes=[("TIFF files", "*.tif;*.tiff;*.dng"), ("All files", "*.*")],
+            filetypes=IMAGE_FILETYPES,
         )
         if not file_path:
             return
@@ -2016,7 +2018,8 @@ class ZoomableCfaViewer(tk.Tk):
         The x-axis is centred on the mean and extends +/- hist_sigma
         standard deviations.
         """
-        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+        from matplotlib.figure import Figure
 
         region_raw = self.data_raw[y0:y1, x0:x1]
 
@@ -2040,10 +2043,10 @@ class ZoomableCfaViewer(tk.Tk):
 
         n_hist_rows = 2 if show_sub else 1
         n_cols = len(channels)
-        fig, axes = plt.subplots(
+        fig = Figure(figsize=(4 * n_cols, 3.5 * n_hist_rows))
+        axes = fig.subplots(
             n_hist_rows,
             n_cols,
-            figsize=(4 * n_cols, 3.5 * n_hist_rows),
             squeeze=False,
         )
         sigma = self.hist_sigma
@@ -2108,7 +2111,17 @@ class ZoomableCfaViewer(tk.Tk):
         region_label = f"Region ({x0}, {y0})\u2013({x1}, {y1})  [{x1 - x0} \u00d7 {y1 - y0}]  (\u00b1{sigma:.1f}\u03c3)"
         fig.suptitle(region_label, fontsize=11)
         fig.tight_layout()
-        plt.show(block=False)
+        window = tk.Toplevel(self)
+        window.title("tv - Histogram")
+        canvas = FigureCanvasTkAgg(fig, master=window)
+        toolbar = NavigationToolbar2Tk(canvas, window, pack_toolbar=False)
+        toolbar.update()
+        toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # Keep the canvas and toolbar alive for the lifetime of the window.
+        window.histogram_canvas = canvas
+        window.histogram_toolbar = toolbar
+        canvas.draw()
 
     # ------------------------------------------------------------------
     # Mouse / zoom / pan
@@ -2372,7 +2385,7 @@ def load_tiff_file():
 
     file_path = filedialog.askopenfilename(
         title="Select TIFF/DNG file to view",
-        filetypes=[("TIFF files", "*.tif;*.tiff;*.dng"), ("All files", "*.*")],
+        filetypes=IMAGE_FILETYPES,
     )
 
     root.destroy()
