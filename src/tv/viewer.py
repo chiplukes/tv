@@ -2018,7 +2018,6 @@ class ZoomableCfaViewer(tk.Tk):
         The x-axis is centred on the mean and extends +/- hist_sigma
         standard deviations.
         """
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
         from matplotlib.figure import Figure
 
         region_raw = self.data_raw[y0:y1, x0:x1]
@@ -2111,6 +2110,27 @@ class ZoomableCfaViewer(tk.Tk):
         region_label = f"Region ({x0}, {y0})\u2013({x1}, {y1})  [{x1 - x0} \u00d7 {y1 - y0}]  (\u00b1{sigma:.1f}\u03c3)"
         fig.suptitle(region_label, fontsize=11)
         fig.tight_layout()
+        self._display_histogram(fig)
+
+    def _display_histogram(self, fig):
+        """Display a figure, including on Python builds incompatible with TkAgg."""
+        try:
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+        except ImportError:
+            # Some managed Python builds support Tk but cannot load TkAgg's
+            # native extension. Render a PNG and let Tk display it directly.
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+            buf = io.BytesIO()
+            FigureCanvasAgg(fig).print_png(buf)
+            window = tk.Toplevel(self)
+            window.title("tv - Histogram")
+            photo = tk.PhotoImage(master=window, data=buf.getvalue())
+            label = ttk.Label(window, image=photo)
+            label.pack(fill=tk.BOTH, expand=True)
+            window.histogram_image = photo
+            return
+
         window = tk.Toplevel(self)
         window.title("tv - Histogram")
         canvas = FigureCanvasTkAgg(fig, master=window)

@@ -1,6 +1,6 @@
 [project]
 name = "tv"
-version = "0.1.0"
+version = "0.1.2"
 description = "TIFF viewer for viewing and analyzing TIFF images from the Big Sky Camera"
 readme = "README.md"
 requires-python = ">=3.10"
