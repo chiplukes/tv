@@ -4,12 +4,14 @@ import io
 import math
 import os
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
 from tifffile import imread
+
+from .plotting import parse_regions, style_properties, temporal_files
 
 IMAGE_FILETYPES = [("TIFF files", ("*.tif", "*.tiff", "*.dng")), ("All files", "*")]
 
@@ -99,6 +101,7 @@ class ZoomableCfaViewer(tk.Tk):
         self.dark_image_path = None
 
         # Histogram settings
+        self.region_color_index = 0
         self.hist_sigma = 3.0  # x-axis range in standard deviations
 
         # Flat-field analysis mode
@@ -162,6 +165,7 @@ class ZoomableCfaViewer(tk.Tk):
         self._build_flat_panel()
         self._build_goto_panel()
         self._build_debug_panel()
+        self._build_plot_panel()
         self._build_canvas()
 
         self._update_bit_depth_label()
@@ -249,7 +253,7 @@ class ZoomableCfaViewer(tk.Tk):
 
         ttk.Label(
             gamma_frame,
-            text="Drag=pan | Shift+Drag=zoom | Ctrl+Drag=histogram | Scroll=zoom | Right-click=mark pixel",
+            text="Drag=pan | Shift+Drag=zoom | Ctrl+Drag=add region | Scroll=zoom | Right-click=mark pixel",
             font=("Arial", 9),
             foreground="#666",
         ).pack(side=tk.LEFT, padx=10)
@@ -2008,109 +2012,224 @@ class ZoomableCfaViewer(tk.Tk):
         except ValueError:
             self.hist_sigma_var.set(self.hist_sigma)
 
-    def _show_histogram(self, x0, y0, x1, y1):
-        """Show per-Bayer-channel histograms for the selected region.
+    def _build_plot_panel(self):
+        panel = ttk.LabelFrame(self, text="Plot regions (end coordinates exclusive)", padding=5)
+        panel.pack(side=tk.TOP, fill=tk.X, padx=5)
+        self.region_text = tk.Text(panel, height=3, width=48, undo=True)
+        self.region_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        scrollbar = ttk.Scrollbar(panel, command=self.region_text.yview)
+        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
+        self.region_text.configure(yscrollcommand=scrollbar.set)
+        controls = ttk.Frame(panel)
+        controls.pack(side=tk.LEFT, padx=5)
+        ttk.Label(controls, text="XSTART,YSTART,XEND,YEND,STYLE (e.g. b-)").pack(anchor=tk.W)
+        buttons = ttk.Frame(controls)
+        buttons.pack(anchor=tk.W)
+        ttk.Button(buttons, text="Add full image", command=self._add_full_region).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Histogram", command=self.on_histogram).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="temporal_scatterplot", command=self.on_temporal_scatterplot).pack(side=tk.LEFT)
+        options = ttk.Frame(controls)
+        options.pack(anchor=tk.W)
+        self.hist_merge_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(options, text="Merge histogram regions", variable=self.hist_merge_var).pack(side=tk.LEFT)
+        self.temporal_mode_var = tk.StringVar(value="Pixels")
+        ttk.Combobox(
+            options,
+            textvariable=self.temporal_mode_var,
+            values=["Pixels", "Average", "Heatmap"],
+            state="readonly",
+            width=10,
+        ).pack(side=tk.LEFT)
 
-        Always shows all four Bayer channels.  If dark subtraction is
-        active, a second row of histograms shows the signed (raw - dark)
-        values which can be negative.
+    def _add_full_region(self):
+        self._add_region(0, 0, self.full_cols, self.full_rows)
 
-        The x-axis is centred on the mean and extends +/- hist_sigma
-        standard deviations.
-        """
+    def _add_region(self, x0, y0, x1, y1):
+        colors = "brgmcyk"
+        style = colors[self.region_color_index % len(colors)] + "-"
+        self.region_color_index += 1
+        content = self.region_text.get("1.0", "end-1c")
+        separator = "\n" if content and not content.endswith("\n") else ""
+        self.region_text.insert(tk.END, f"{separator}{x0},{y0},{x1},{y1},{style}\n")
+        self.region_text.see(tk.END)
+
+    def _plot_regions(self):
+        return parse_regions(self.region_text.get("1.0", "end-1c"), (self.full_rows, self.full_cols))
+
+    def _analysis_data(self, raw):
+        """Use signed calibration math; recompute row references for each frame."""
+        data = self._extract_bit_range(raw).astype(np.float64)
+        if self.dark_image_subtract_enabled and self.dark_image_data is not None:
+            if data.shape != self.dark_image_data.shape:
+                raise ValueError("Dark image dimensions do not match temporal frame.")
+            data -= self.dark_image_data
+        if self.row_correction_enabled:
+            width, offset = self.row_corr_width, self.row_corr_offset
+            cols = data.shape[1]
+            if offset < 0 or width <= 0 or cols - offset - width < offset + width:
+                raise ValueError("Row correction columns are invalid for this frame.")
+            references = np.concatenate(
+                (data[:, offset : offset + width], data[:, cols - offset - width : cols - offset]), axis=1
+            )
+            data -= references.mean(axis=1, keepdims=True)
+        return data
+
+    def _plot_channels(self):
+        if self.cfa_mode == "Mono":
+            return ["Mono"]
+        return [
+            name
+            for name, enabled in (
+                ("R", self.show_bayer_r),
+                ("Gr", self.show_bayer_gr),
+                ("Gb", self.show_bayer_gb),
+                ("B", self.show_bayer_b),
+            )
+            if enabled
+        ]
+
+    def _region_values(self, data, region, channel):
+        x0, y0, x1, y1, _ = region
+        if channel == "Mono":
+            return data[y0:y1, x0:x1].ravel()
+        row, col = next(pos for pos, name in self.BAYER_PATTERN.items() if name == channel)
+        return data[y0 + (row - y0) % 2 : y1 : 2, x0 + (col - x0) % 2 : x1 : 2].ravel()
+
+    def on_histogram(self):
         from matplotlib.figure import Figure
 
-        region_raw = self.data_raw[y0:y1, x0:x1]
+        try:
+            regions = self._plot_regions()
+            channels = self._plot_channels()
+            if not channels:
+                raise ValueError("Enable at least one Bayer channel.")
+            self._on_hist_sigma_change()
+            data = self._analysis_data(self._raw_full_bits)
+            groups = [regions] if self.hist_merge_var.get() else [[region] for region in regions]
+            fig = Figure(figsize=(4 * len(channels), 3 * len(groups)))
+            axes = fig.subplots(len(groups), len(channels), squeeze=False)
+            for ri, group in enumerate(groups):
+                for ci, channel in enumerate(channels):
+                    ax = axes[ri, ci]
+                    values = np.concatenate([self._region_values(data, region, channel) for region in group])
+                    color, _, _ = style_properties(group[0][4])
+                    if values.size:
+                        mean, std = values.mean(), values.std()
+                        ax.hist(values, bins="auto", color=color, edgecolor="black", linewidth=0.3)
+                        span = max(self.hist_sigma * std, 0.5)
+                        ax.set_xlim(mean - span, mean + span)
+                        ax.set_title(
+                            f"{channel} / {'Merged' if len(group) > 1 else f'Region {ri + 1}'}\n"
+                            f"μ={mean:.3g}  σ={std:.3g}"
+                        )
+                    else:
+                        ax.set_title(f"{channel}: no pixels")
+                    ax.set_xlabel("Corrected DN")
+                    ax.set_ylabel("Count")
+            fig.suptitle("Region histograms")
+            fig.tight_layout()
+            self._display_histogram(fig)
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Histogram", str(exc), parent=self)
 
-        # Build coordinate grids (absolute array coords)
-        rows_idx = np.arange(y0, y1)
-        cols_idx = np.arange(x0, x1)
-        col_grid, row_grid = np.meshgrid(cols_idx, rows_idx)
+    def on_temporal_scatterplot(self):
+        from matplotlib.colors import LinearSegmentedColormap
+        from matplotlib.figure import Figure
 
-        channels = ["R", "Gr", "Gb", "B"]
-        channel_colors = {
-            "R": "red",
-            "Gr": "green",
-            "Gb": "darkgreen",
-            "B": "blue",
-        }
-
-        show_sub = self.dark_image_subtract_enabled and self.dark_image_data is not None
-        dark_region = None
-        if show_sub:
-            dark_region = self.dark_image_data[y0:y1, x0:x1]
-
-        n_hist_rows = 2 if show_sub else 1
-        n_cols = len(channels)
-        fig = Figure(figsize=(4 * n_cols, 3.5 * n_hist_rows))
-        axes = fig.subplots(
-            n_hist_rows,
-            n_cols,
-            squeeze=False,
-        )
-        sigma = self.hist_sigma
-
-        for ci, ch_name in enumerate(channels):
-            # Bayer position for this component
-            ch_pos = None
-            for pos, comp in self.BAYER_PATTERN.items():
-                if comp == ch_name:
-                    ch_pos = pos
-                    break
-            mask = (row_grid % 2 == ch_pos[0]) & (col_grid % 2 == ch_pos[1])
-            raw_vals = region_raw[mask].astype(np.float64)
-            color = channel_colors[ch_name]
-
-            # --- Raw histogram ---
-            ax = axes[0, ci]
-            if raw_vals.size > 0:
-                mean_r = np.mean(raw_vals)
-                std_r = np.std(raw_vals)
-                lo = mean_r - sigma * std_r
-                hi = mean_r + sigma * std_r
-                ax.hist(
-                    raw_vals,
-                    bins="auto",
-                    color=color,
-                    alpha=0.85,
-                    edgecolor="black",
-                    linewidth=0.3,
-                )
-                ax.set_xlim(lo, hi)
-                ax.set_title(f"{ch_name} — Raw\n\u03bc={mean_r:.1f}  \u03c3={std_r:.1f}")
-            else:
-                ax.set_title(f"{ch_name} — Raw (no data)")
-            ax.set_xlabel("DN")
-            ax.set_ylabel("Count")
-
-            # --- Subtracted histogram ---
-            if show_sub:
-                sub_vals = (raw_vals.astype(np.int64) - dark_region[mask].astype(np.int64)).astype(np.float64)
-                ax2 = axes[1, ci]
-                if sub_vals.size > 0:
-                    mean_s = np.mean(sub_vals)
-                    std_s = np.std(sub_vals)
-                    lo_s = mean_s - sigma * std_s
-                    hi_s = mean_s + sigma * std_s
-                    ax2.hist(
-                        sub_vals,
-                        bins="auto",
+        try:
+            regions = self._plot_regions()
+            channels = self._plot_channels()
+            if not channels:
+                raise ValueError("Enable at least one Bayer channel.")
+            if not self.filename:
+                raise ValueError("Open a TIFF with a numeric time suffix first.")
+            files, xlabel = temporal_files(self.filename)
+            mode = self.temporal_mode_var.get()
+            samples = [[[] for _ in channels] for _ in regions]
+            for _, path in files:
+                raw = read_tiff_2d(path)
+                if raw.shape != (self.full_rows, self.full_cols):
+                    raise ValueError(f"{path.name}: image dimensions do not match the current image.")
+                data = self._analysis_data(raw)
+                for ri, region in enumerate(regions):
+                    for ci, channel in enumerate(channels):
+                        values = self._region_values(data, region, channel)
+                        if mode == "Average" and values.size:
+                            values = np.array([values.mean()])
+                        samples[ri][ci].append(values.copy())
+            times = np.array([time for time, _ in files])
+            fig = Figure(figsize=(5 * len(channels), 4))
+            axes = fig.subplots(1, len(channels), squeeze=False)[0]
+            for ci, channel in enumerate(channels):
+                ax = axes[ci]
+                for ri, region in enumerate(regions):
+                    values = samples[ri][ci]
+                    if not values[0].size:
+                        continue
+                    color, linestyle, marker = style_properties(region[4])
+                    label = f"Region {ri + 1}"
+                    means = np.array([v.mean() for v in values])
+                    if mode == "Average":
+                        ax.plot(
+                            times,
+                            means,
+                            color=color,
+                            linestyle=linestyle,
+                            marker=marker if marker != "None" else "o",
+                            label=label,
+                        )
+                    elif mode == "Pixels":
+                        for ti, pixels in zip(times, values):
+                            ax.scatter(
+                                np.full(pixels.size, ti),
+                                pixels,
+                                color=color,
+                                s=3,
+                                alpha=0.25,
+                                label=label if ti == times[0] else None,
+                                rasterized=True,
+                            )
+                    else:
+                        # Midpoint edges retain the physical spacing of irregular time samples.
+                        unique = np.unique(times)
+                        edges = np.r_[
+                            unique[0] - (unique[1] - unique[0]) / 2,
+                            (unique[:-1] + unique[1:]) / 2,
+                            unique[-1] + (unique[-1] - unique[-2]) / 2,
+                        ]
+                        bins = np.histogram_bin_edges(np.concatenate(values), bins=100)
+                        counts = np.stack(
+                            [
+                                np.histogram(
+                                    np.concatenate([v for t, v in zip(times, values) if t == time]), bins=bins
+                                )[0]
+                                for time in unique
+                            ],
+                            axis=1,
+                        )
+                        cmap = LinearSegmentedColormap.from_list(label, [(1, 1, 1, 0), color])
+                        mesh = ax.pcolormesh(edges, bins, np.ma.masked_equal(counts, 0), cmap=cmap, shading="flat")
+                        fig.colorbar(mesh, ax=ax, label=f"{label} pixel count")
+                    # Centering times improves conditioning for small or offset timestamps.
+                    center = times.mean()
+                    slope, intercept = np.polyfit(times - center, means, 1)
+                    fit_x = np.array([times.min(), times.max()])
+                    ax.plot(
+                        fit_x,
+                        slope * (fit_x - center) + intercept,
                         color=color,
-                        alpha=0.85,
-                        edgecolor="black",
-                        linewidth=0.3,
+                        linestyle="--",
+                        label=f"{label} fit: y={slope:.4g}x{intercept - slope * center:+.4g}",
                     )
-                    ax2.set_xlim(lo_s, hi_s)
-                    ax2.set_title(f"{ch_name} — Sub\n\u03bc={mean_s:.1f}  \u03c3={std_s:.1f}")
-                else:
-                    ax2.set_title(f"{ch_name} — Sub (no data)")
-                ax2.set_xlabel("DN")
-                ax2.set_ylabel("Count")
-
-        region_label = f"Region ({x0}, {y0})\u2013({x1}, {y1})  [{x1 - x0} \u00d7 {y1 - y0}]  (\u00b1{sigma:.1f}\u03c3)"
-        fig.suptitle(region_label, fontsize=11)
-        fig.tight_layout()
-        self._display_histogram(fig)
+                ax.set_title(channel)
+                ax.set_xlabel(xlabel)
+                ax.set_ylabel("Corrected DN")
+                ax.legend(fontsize="small")
+            fig.suptitle(f"Temporal {mode.lower()} — {len(files)} frames")
+            fig.tight_layout()
+            self._display_histogram(fig)
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Temporal plot", str(exc), parent=self)
 
     def _display_histogram(self, fig):
         """Display a figure, including on Python builds incompatible with TkAgg."""
@@ -2124,7 +2243,7 @@ class ZoomableCfaViewer(tk.Tk):
             buf = io.BytesIO()
             FigureCanvasAgg(fig).print_png(buf)
             window = tk.Toplevel(self)
-            window.title("tv - Histogram")
+            window.title("tv - Plot")
             photo = tk.PhotoImage(master=window, data=buf.getvalue())
             label = ttk.Label(window, image=photo)
             label.pack(fill=tk.BOTH, expand=True)
@@ -2132,7 +2251,7 @@ class ZoomableCfaViewer(tk.Tk):
             return
 
         window = tk.Toplevel(self)
-        window.title("tv - Histogram")
+        window.title("tv - Plot")
         canvas = FigureCanvasTkAgg(fig, master=window)
         toolbar = NavigationToolbar2Tk(canvas, window, pack_toolbar=False)
         toolbar.update()
@@ -2220,23 +2339,18 @@ class ZoomableCfaViewer(tk.Tk):
                 y0, y1 = y1, y0
 
             if (x1 - x0) > 5 and (y1 - y0) > 5:
-                adj_x0 = x0 - self.display_x
-                adj_y0 = y0 - self.display_y
-                adj_x1 = x1 - self.display_x
-                adj_y1 = y1 - self.display_y
-
-                arr_x0 = int(self.view_x + adj_x0 / self.zoom)
-                arr_y0 = int(self.view_y + adj_y0 / self.zoom)
-                arr_x1 = int(self.view_x + adj_x1 / self.zoom)
-                arr_y1 = int(self.view_y + adj_y1 / self.zoom)
-
-                arr_x0 = max(0, min(arr_x0, self.full_cols - 1))
-                arr_y0 = max(0, min(arr_y0, self.full_rows - 1))
-                arr_x1 = max(0, min(arr_x1, self.full_cols))
-                arr_y1 = max(0, min(arr_y1, self.full_rows))
-
-                if arr_x1 > arr_x0 and arr_y1 > arr_y0:
-                    self._show_histogram(arr_x0, arr_y0, arr_x1, arr_y1)
+                geom = getattr(self, "_render_geom", None)
+                if geom:
+                    sx = geom["raw_span_w"] / self.display_w
+                    sy = geom["raw_span_h"] / self.display_h
+                    arr_x0 = int(geom["x_start"] + (x0 - self.display_x) * sx)
+                    arr_y0 = int(geom["y_start"] + (y0 - self.display_y) * sy)
+                    arr_x1 = math.ceil(geom["x_start"] + (x1 - self.display_x) * sx)
+                    arr_y1 = math.ceil(geom["y_start"] + (y1 - self.display_y) * sy)
+                    arr_x0, arr_x1 = max(0, arr_x0), min(self.full_cols, arr_x1)
+                    arr_y0, arr_y1 = max(0, arr_y0), min(self.full_rows, arr_y1)
+                    if arr_x1 > arr_x0 and arr_y1 > arr_y0:
+                        self._add_region(arr_x0, arr_y0, arr_x1, arr_y1)
 
             self.hist_rect_active = False
             self.hist_rect_start = None

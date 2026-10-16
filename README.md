@@ -13,6 +13,7 @@ A TIFF viewer for viewing and analyzing raw Bayer CFA images.
 - **Dark pixel correction** — per-row dark subtraction from configurable dark columns
 - **Flat-field analysis** — deviation heat-map for a single Bayer channel with block averaging, top/bottom half references, and a colour scale bar
 - **Hover inspection** — real-time coordinate, component, and value readout that snaps to enabled channels
+- **Region plots** — editable Ctrl-drag regions, separate/merged histograms, and temporal pixel/average/heatmap plots with linear fits and calibration math
 - **Export** — save the current viewport as a raw TIFF
 
 ## Installation

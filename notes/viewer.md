@@ -117,3 +117,39 @@ In **flat mode**, the info panel also displays the block-level deviation for the
 ## Export
 
 The Export View button saves the current viewport's raw Bayer data (not the rendered RGB) as a 16-bit TIFF. The exported region is aligned to 2×2 Bayer cell boundaries and respects the current downsample level.
+
+## Region plots
+
+Ctrl + left-drag appends a region to the editable plot region list. Each line is
+`XSTART,YSTART,XEND,YEND,MATPLOTLIB_PLOTSTYLE`, for example `10,20,100,200,b-`.
+End coordinates are exclusive. Type or delete lines to add, edit, or remove regions;
+**Add full image** adds the entire frame. New regions cycle through default colors.
+
+**Histogram** plots the current image, with a row per region and a column per enabled
+Bayer component (a single column in Mono mode). **Merge histogram regions** combines
+all listed samples into one histogram per channel. Overlapping regions contribute
+pixels once for each region. The existing histogram sigma setting controls the visible
+range around each distribution's mean.
+
+**temporal_scatterplot** finds TIFF files in the current image's directory with the
+same prefix and a numeric final underscore suffix, such as `capture_0.06ms.tif`,
+`capture_0.1ms.tif`, and `capture_1ms.tif`. It supports scientific notation and
+`s`, `ms`, `us` (also `µs`/`μs`), and `ns`; mixed time units are converted to the
+current file's unit. Unitless numeric suffixes are also supported, separately from
+unit-bearing names. At least two distinct times and matching image dimensions are
+required. Files are sorted numerically, with actual time spacing on the X axis.
+
+Choose **Pixels** for every pixel, **Average** for one regional channel average per
+frame, or **Heatmap** for pixel-count distributions at each time. Each region keeps
+its style/color across channel panels. Heatmap color bars show counts per region;
+overlapping heatmaps are overlaid. Every mode includes a dashed linear least-squares
+fit of the per-frame averages for each region and channel, with the equation in the
+legend. Average mode retains only averages between frames to reduce memory use.
+Pixel and heatmap modes retain the selected samples and can use substantial memory
+for large regions or long sequences.
+
+Both plot types use the selected bit range, dark-image subtraction, and row correction.
+Row references are recomputed for every temporal frame after dark subtraction.
+Analysis preserves negative calibrated values. Gamma and color gains are display
+adjustments and do not change plotted DN values. Color mode separates enabled Bayer
+components using their absolute sensor coordinates; Mono mode uses all region pixels.
