@@ -199,3 +199,51 @@ def collect_temporal_samples(
         if progress:
             progress(frame + 1, len(files))
     return samples
+
+
+class PlotPanelLayout:
+    """Switch between the original layout and an expanded single-channel layout."""
+
+    def __init__(self, figure):
+        self.figure = figure
+        self.panels = [ax for ax in figure.axes if ax.get_label() != "<colorbar>"]
+        self.channels = list(dict.fromkeys(ax.get_label() for ax in self.panels))
+        self.original = {
+            ax: (ax.get_subplotspec(), ax.get_position(original=True).frozen(), ax.get_axes_locator(), ax.get_visible())
+            for ax in figure.axes
+        }
+        self.colorbars = {}
+        for ax in figure.axes:
+            colorbar = getattr(ax, "_colorbar", None)
+            if colorbar is not None:
+                self.colorbars.setdefault(colorbar.mappable.axes, []).append(ax)
+
+    def select(self, channel=None):
+        """Keep plotted data and zoom limits while changing visibility and layout."""
+        if channel is not None and channel not in self.channels:
+            raise ValueError(f"Unknown plot channel: {channel}")
+        if channel is None:
+            for ax, (spec, position, locator, visible) in self.original.items():
+                if spec is not None:
+                    ax.set_subplotspec(spec)
+                ax.set_axes_locator(locator)
+                ax.set_position(position)
+                ax.set_visible(visible)
+            return
+
+        selected = [ax for ax in self.panels if ax.get_label() == channel]
+        for ax in self.figure.axes:
+            ax.set_visible(False)
+        grid = self.figure.add_gridspec(len(selected), 1, left=0.08, right=0.94, bottom=0.13, top=0.88, hspace=0.65)
+        for row, ax in enumerate(selected):
+            bars = self.colorbars.get(ax, [])
+            if bars:
+                nested = grid[row].subgridspec(1, len(bars) + 1, width_ratios=[1] + [0.025] * len(bars), wspace=0.25)
+                spec = nested[0]
+                for index, bar in enumerate(bars):
+                    bar.set_subplotspec(nested[index + 1])
+                    bar.set_visible(True)
+            else:
+                spec = grid[row]
+            ax.set_subplotspec(spec)
+            ax.set_visible(True)

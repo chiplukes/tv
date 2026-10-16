@@ -180,12 +180,14 @@ the button is pressed. **Average** uses the least memory; **Pixels** still draws
 selected pixel and can take time to render when regions contain millions of samples.
 Heatmap binning avoids building an extra concatenated copy of all pixel samples.
 
-### Interactive axes
+### Interactive plots
 
-Every plot window includes a panel selector (or **All panels**), **X min**, **X max**,
-**Y min**, **Y max**, and linear/log scale selectors. Edit the values and press
-**Apply** to redraw without rereading images. **Reset axes** restores the original
-limits and scales. Log scales require positive limits. When TkAgg is available, the
-Matplotlib toolbar also supports pan, rectangle zoom, history, and saving. On Python
-builds without TkAgg, the PNG fallback still supports the axis controls and **Save
-plot…**.
+The **Show** dropdown switches between **All panels** and a single Bayer channel
+(or Mono). A single channel expands to fill the plot area; histograms show all of
+that channel's region rows. Heatmaps retain only the selected channel's color bars.
+Switching views preserves plotted data and current axis limits without rereading
+images. Choose **All panels** to restore the original arrangement.
+
+Use the Matplotlib toolbar for mouse pan and rectangle zoom, navigation history,
+and saving. Numeric axis fields and scale selectors have been removed. On Python
+builds without TkAgg, the PNG fallback supports channel selection and **Save plot…**.

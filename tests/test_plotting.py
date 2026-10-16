@@ -12,7 +12,7 @@ import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from tifffile import imwrite
 
-from tv.plotting import TiffRegionReader, collect_temporal_samples, parse_regions, temporal_files
+from tv.plotting import PlotPanelLayout, TiffRegionReader, collect_temporal_samples, parse_regions, temporal_files
 from tv.viewer import ZoomableCfaViewer
 
 
@@ -31,6 +31,50 @@ class PlottingTests(unittest.TestCase):
         viewer.temporal_end_var = SimpleNamespace(get=lambda: "")
         viewer._run_plot_job = lambda load, done: done(load(None, threading.Event()))
         return viewer
+
+    def test_panel_selection_expands_channels_and_restores_layout(self):
+        from matplotlib.figure import Figure
+
+        for heatmap in (False, True):
+            with self.subTest(heatmap=heatmap):
+                fig = Figure(figsize=(12, 6))
+                axes = fig.subplots(1 if heatmap else 2, 2, squeeze=False)
+                for row in axes:
+                    for channel, ax in zip(("R", "B"), row):
+                        ax.set_label(channel)
+                        ax.set_title(channel)
+                        if heatmap:
+                            for _ in range(2):
+                                mesh = ax.pcolormesh(np.arange(9).reshape(3, 3))
+                                fig.colorbar(mesh, ax=ax)
+                        else:
+                            ax.plot([0, 1], [2, 3])
+                fig.tight_layout()
+                canvas = FigureCanvasAgg(fig)
+                canvas.draw()
+                layout = PlotPanelLayout(fig)
+                self.assertEqual(layout.channels, ["R", "B"])
+                original = {ax: ax.get_position().frozen() for ax in fig.axes}
+                r = axes[0, 0]
+                r.set_xlim(0.25, 0.75)
+                for channel in ("R", "B", "R"):
+                    layout.select(channel)
+                    canvas.draw()
+                    for ax in axes.ravel():
+                        self.assertEqual(ax.get_visible(), ax.get_label() == channel)
+                        if ax.get_visible():
+                            self.assertGreater(ax.get_position().width, original[ax].width)
+                    for parent, bars in layout.colorbars.items():
+                        for bar in bars:
+                            self.assertEqual(bar.get_visible(), parent.get_label() == channel)
+                layout.select()
+                canvas.draw()
+                for ax in fig.axes:
+                    self.assertTrue(ax.get_visible())
+                    np.testing.assert_allclose(ax.get_position().bounds, original[ax].bounds)
+                np.testing.assert_allclose(r.get_xlim(), [0.25, 0.75])
+                with self.assertRaises(ValueError):
+                    layout.select("Missing")
 
     def test_regions_and_absolute_bayer_parity(self):
         regions = parse_regions('1,1,6,5,"b-"\n0,0,8,6,r.', (6, 8))

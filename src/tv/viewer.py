@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image
 from tifffile import imread
 
-from .plotting import collect_temporal_samples, parse_regions, style_properties, temporal_files
+from .plotting import PlotPanelLayout, collect_temporal_samples, parse_regions, style_properties, temporal_files
 
 IMAGE_FILETYPES = [("TIFF files", ("*.tif", "*.tiff", "*.dng")), ("All files", "*")]
 
@@ -2169,6 +2169,7 @@ class ZoomableCfaViewer(tk.Tk):
             for ri, group in enumerate(groups):
                 for ci, channel in enumerate(channels):
                     ax = axes[ri, ci]
+                    ax.set_label(channel)
                     values = np.concatenate([self._region_values(data, region, channel) for region in group])
                     color, _, _ = style_properties(group[0][4])
                     if values.size:
@@ -2228,6 +2229,7 @@ class ZoomableCfaViewer(tk.Tk):
             axes = fig.subplots(1, len(channels), squeeze=False)[0]
             for ci, channel in enumerate(channels):
                 ax = axes[ci]
+                ax.set_label(channel)
                 for ri, region in enumerate(regions):
                     values = samples[ri][ci]
                     if not values[0].size:
@@ -2385,74 +2387,29 @@ class ZoomableCfaViewer(tk.Tk):
             draw = canvas.draw_idle
 
         window.histogram_canvas = canvas
-        self._build_plot_axis_controls(window, fig, draw)
+        self._build_plot_panel_selector(window, fig, draw)
         draw()
 
-    def _build_plot_axis_controls(self, window, fig, draw):
-        axes = [ax for ax in fig.axes if ax.get_label() != "<colorbar>"]
-        original = [(ax.get_xlim(), ax.get_ylim(), ax.get_xscale(), ax.get_yscale()) for ax in axes]
+    def _build_plot_panel_selector(self, window, fig, draw):
+        layout = PlotPanelLayout(fig)
         frame = ttk.Frame(window, padding=5)
         frame.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(frame, text="Show:").pack(side=tk.LEFT, padx=(0, 5))
         selection = tk.StringVar(master=window, value="All panels")
-        names = [f"{i + 1}: {ax.get_title().splitlines()[0]}" for i, ax in enumerate(axes)]
-        chooser = ttk.Combobox(frame, textvariable=selection, values=["All panels"] + names, state="readonly", width=22)
+        chooser = ttk.Combobox(
+            frame, textvariable=selection, values=["All panels"] + layout.channels, state="readonly", width=15
+        )
         chooser.pack(side=tk.LEFT)
-        variables = []
-        for name in ("X min", "X max", "Y min", "Y max"):
-            ttk.Label(frame, text=name).pack(side=tk.LEFT, padx=(6, 2))
-            var = tk.StringVar(master=window)
-            ttk.Entry(frame, textvariable=var, width=10).pack(side=tk.LEFT)
-            variables.append(var)
-        scales = []
-        for name in ("X", "Y"):
-            ttk.Label(frame, text=name).pack(side=tk.LEFT, padx=(6, 2))
-            var = tk.StringVar(master=window, value="linear")
-            ttk.Combobox(frame, textvariable=var, values=["linear", "log"], state="readonly", width=7).pack(
-                side=tk.LEFT
-            )
-            scales.append(var)
 
-        def targets():
-            return axes if selection.get() == "All panels" else [axes[names.index(selection.get())]]
-
-        def refresh(event=None):
-            ax = targets()[0]
-            for var, value in zip(variables, (*ax.get_xlim(), *ax.get_ylim())):
-                var.set(f"{value:.9g}")
-            for var, value in zip(scales, (ax.get_xscale(), ax.get_yscale())):
-                var.set(value)
-
-        def apply():
-            try:
-                limits = [float(var.get()) for var in variables]
-                if not all(np.isfinite(limits)) or limits[0] == limits[1] or limits[2] == limits[3]:
-                    raise ValueError("Axis limits must be finite and different.")
-                for scale, pair in zip(scales, (limits[:2], limits[2:])):
-                    if scale.get() == "log" and min(pair) <= 0:
-                        raise ValueError("Logarithmic axes require positive limits.")
-                for ax in targets():
-                    ax.set_xscale(scales[0].get())
-                    ax.set_yscale(scales[1].get())
-                    ax.set_xlim(*limits[:2])
-                    ax.set_ylim(*limits[2:])
-                draw()
-            except ValueError as exc:
-                messagebox.showerror("Axis limits", str(exc), parent=window)
-
-        def reset():
-            for ax in targets():
-                xlim, ylim, xs, ys = original[axes.index(ax)]
-                ax.set_xscale(xs)
-                ax.set_yscale(ys)
-                ax.set_xlim(xlim)
-                ax.set_ylim(ylim)
-            refresh()
+        def select(event=None):
+            layout.select(None if selection.get() == "All panels" else selection.get())
+            # Old toolbar history contains positions from the previous layout.
+            toolbar = getattr(window, "histogram_toolbar", None)
+            if toolbar is not None:
+                toolbar.update()
             draw()
 
-        chooser.bind("<<ComboboxSelected>>", refresh)
-        ttk.Button(frame, text="Apply", command=apply).pack(side=tk.LEFT, padx=5)
-        ttk.Button(frame, text="Reset axes", command=reset).pack(side=tk.LEFT)
-        refresh()
+        chooser.bind("<<ComboboxSelected>>", select)
 
     # ------------------------------------------------------------------
     # Mouse / zoom / pan
