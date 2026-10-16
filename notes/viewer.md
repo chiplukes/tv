@@ -120,7 +120,9 @@ The Export View button saves the current viewport's raw Bayer data (not the rend
 
 ## Region plots
 
-Ctrl + left-drag appends a region to the editable plot region list. Each line is
+The plot controls sit to the right of the settings above the image. Drag the divider
+to resize the two areas; wide settings rows remain accessible with the horizontal
+scrollbar. Ctrl + left-drag appends a region to the editable plot region list. Each line is
 `XSTART,YSTART,XEND,YEND,MATPLOTLIB_PLOTSTYLE`, for example `10,20,100,200,b-`.
 End coordinates are exclusive. Type or delete lines to add, edit, or remove regions;
 **Add full image** adds the entire frame. New regions cycle through default colors.
@@ -139,6 +141,14 @@ current file's unit. Unitless numeric suffixes are also supported, separately fr
 unit-bearing names. At least two distinct times and matching image dimensions are
 required. Files are sorted numerically, with actual time spacing on the X axis.
 
+**Start file** and **End file** automatically show the first and last detected
+filenames when a series is opened. Edit either filename to restrict plotting to that
+inclusive range in numeric time order. Clear a field to leave that end unrestricted.
+**Full range** restores the detected bounds. Opening another frame or reloading
+within the same series preserves your edits; opening a different series fills in
+its range. Invalid, reversed, or single-time ranges show an error before loading
+image data.
+
 Choose **Pixels** for every pixel, **Average** for one regional channel average per
 frame, or **Heatmap** for pixel-count distributions at each time. Each region keeps
 its style/color across channel panels. Heatmap color bars show counts per region;
@@ -153,3 +163,29 @@ Row references are recomputed for every temporal frame after dark subtraction.
 Analysis preserves negative calibrated values. Gamma and color gains are display
 adjustments and do not change plotted DN values. Color mode separates enabled Bayer
 components using their absolute sensor coordinates; Mono mode uses all region pixels.
+
+### Large temporal sequences
+
+Temporal loading reads only the selected rectangles and, when row correction is
+active, reference columns for the selected rows. Compatible uncompressed TIFFs are
+memory-mapped read-only; other supported TIFFs decode only intersecting strips or
+tiles, sharing decoded segments between overlapping regions. The TIFF storage layout
+sets the minimum read size: a narrow region in a compressed full-width strip still
+requires that entire strip to be decoded; a file stored as one compressed strip can
+require decoding the whole frame.
+
+Loading runs in a background thread. A progress window reports completed frames and
+supports cancellation after the current frame. Calibration settings are captured when
+the button is pressed. **Average** uses the least memory; **Pixels** still draws every
+selected pixel and can take time to render when regions contain millions of samples.
+Heatmap binning avoids building an extra concatenated copy of all pixel samples.
+
+### Interactive axes
+
+Every plot window includes a panel selector (or **All panels**), **X min**, **X max**,
+**Y min**, **Y max**, and linear/log scale selectors. Edit the values and press
+**Apply** to redraw without rereading images. **Reset axes** restores the original
+limits and scales. Log scales require positive limits. When TkAgg is available, the
+Matplotlib toolbar also supports pan, rectangle zoom, history, and saving. On Python
+builds without TkAgg, the PNG fallback still supports the axis controls and **Save
+plot…**.

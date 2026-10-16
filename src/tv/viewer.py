@@ -3,6 +3,8 @@
 import io
 import math
 import os
+import queue
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from types import SimpleNamespace
@@ -11,7 +13,7 @@ import numpy as np
 from PIL import Image
 from tifffile import imread
 
-from .plotting import parse_regions, style_properties, temporal_files
+from .plotting import collect_temporal_samples, parse_regions, style_properties, temporal_files
 
 IMAGE_FILETYPES = [("TIFF files", ("*.tif", "*.tiff", "*.dng")), ("All files", "*")]
 
@@ -43,7 +45,7 @@ class ZoomableCfaViewer(tk.Tk):
         else:
             self.title("tv")
 
-        self.geometry("800x600+50+50")
+        self.geometry("1200x750+50+50")
 
         # Bit-range rescaling: many 12-bit sensors are stored in TIFFs with
         # the value left-shifted into the upper bits of a 16-bit pixel so
@@ -157,6 +159,7 @@ class ZoomableCfaViewer(tk.Tk):
 
         # --- Create GUI Widgets ---
         self._build_info_panel()
+        self._build_settings_area()
         self._build_gamma_panel()
         self._build_bitdepth_panel()
         self._build_dark_panel()
@@ -196,8 +199,28 @@ class ZoomableCfaViewer(tk.Tk):
         self.flat_dev_label = ttk.Label(info_frame, text="", width=18, font=("Courier", 12))
         self.flat_dev_label.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
+    def _build_settings_area(self):
+        self.settings_panes = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        self.settings_panes.pack(side=tk.TOP, fill=tk.X, padx=5)
+        left = ttk.Frame(self.settings_panes)
+        self.settings_panes.add(left, weight=3)
+        # Preserve access to wide settings rows when the region panel is expanded.
+        viewport = tk.Canvas(left, highlightthickness=0, width=700, height=1)
+        viewport.pack(side=tk.TOP, fill=tk.X, expand=True)
+        scrollbar = ttk.Scrollbar(left, orient=tk.HORIZONTAL, command=viewport.xview)
+        scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        viewport.configure(xscrollcommand=scrollbar.set)
+        self.settings_frame = ttk.Frame(viewport)
+        viewport.create_window(0, 0, window=self.settings_frame, anchor=tk.NW)
+
+        def resize(event):
+            viewport.configure(scrollregion=viewport.bbox("all"), height=event.height)
+
+        self.settings_frame.bind("<Configure>", resize)
+        self.after_idle(lambda: self.settings_panes.sashpos(0, int(self.winfo_width() * 0.65)))
+
     def _build_gamma_panel(self):
-        gamma_frame = ttk.Frame(self, padding="5 5 5 5")
+        gamma_frame = ttk.Frame(self.settings_frame, padding="5 5 5 5")
         gamma_frame.pack(side=tk.TOP, fill=tk.X, padx=5)
 
         ttk.Label(gamma_frame, text="Gamma:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(10, 5))
@@ -259,7 +282,7 @@ class ZoomableCfaViewer(tk.Tk):
         ).pack(side=tk.LEFT, padx=10)
 
     def _build_bitdepth_panel(self):
-        bitdepth_frame = ttk.Frame(self, padding="5 5 5 5")
+        bitdepth_frame = ttk.Frame(self.settings_frame, padding="5 5 5 5")
         bitdepth_frame.pack(side=tk.TOP, fill=tk.X, padx=5)
 
         ttk.Label(bitdepth_frame, text="Bit Range:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(10, 10))
@@ -344,7 +367,7 @@ class ZoomableCfaViewer(tk.Tk):
         self._apply_bit_range()
 
     def _build_dark_panel(self):
-        dark_frame = ttk.Frame(self, padding="5 5 5 5")
+        dark_frame = ttk.Frame(self.settings_frame, padding="5 5 5 5")
         dark_frame.pack(side=tk.TOP, fill=tk.X, padx=5)
 
         self.row_correction_var = tk.BooleanVar(value=self.row_correction_enabled)
@@ -399,7 +422,7 @@ class ZoomableCfaViewer(tk.Tk):
         )
 
     def _build_dark_image_panel(self):
-        di_frame = ttk.Frame(self, padding="5 5 5 5")
+        di_frame = ttk.Frame(self.settings_frame, padding="5 5 5 5")
         di_frame.pack(side=tk.TOP, fill=tk.X, padx=5)
 
         self.dark_image_subtract_var = tk.BooleanVar(value=self.dark_image_subtract_enabled)
@@ -468,7 +491,7 @@ class ZoomableCfaViewer(tk.Tk):
             self.calculate_row_corr_averages()
 
     def _build_color_panel(self):
-        color_frame = ttk.Frame(self, padding="5 5 5 5")
+        color_frame = ttk.Frame(self.settings_frame, padding="5 5 5 5")
         color_frame.pack(side=tk.TOP, fill=tk.X, padx=5)
 
         ttk.Label(color_frame, text="Color Adjust:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(10, 10))
@@ -513,7 +536,7 @@ class ZoomableCfaViewer(tk.Tk):
         self.export_button.pack(side=tk.LEFT, padx=(20, 10))
 
     def _build_flat_panel(self):
-        flat_frame = ttk.Frame(self, padding="5 5 5 5")
+        flat_frame = ttk.Frame(self.settings_frame, padding="5 5 5 5")
         flat_frame.pack(side=tk.TOP, fill=tk.X, padx=5)
 
         self.flat_mode_var = tk.BooleanVar(value=self.flat_mode_enabled)
@@ -565,7 +588,7 @@ class ZoomableCfaViewer(tk.Tk):
         self.flat_info_label.pack(side=tk.LEFT, padx=(10, 5))
 
     def _build_goto_panel(self):
-        goto_frame = ttk.Frame(self, padding="5 5 5 5")
+        goto_frame = ttk.Frame(self.settings_frame, padding="5 5 5 5")
         goto_frame.pack(side=tk.TOP, fill=tk.X, padx=5)
 
         ttk.Label(goto_frame, text="Goto Pixel:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(10, 10))
@@ -614,7 +637,7 @@ class ZoomableCfaViewer(tk.Tk):
         self.goto_status_label.config(text=f"Jumped to ({x}, {y})", foreground="#060")
 
     def _build_debug_panel(self):
-        debug_frame = ttk.Frame(self, padding="5 5 5 5")
+        debug_frame = ttk.Frame(self.settings_frame, padding="5 5 5 5")
         debug_frame.pack(side=tk.TOP, fill=tk.X, padx=5)
 
         ttk.Label(debug_frame, text="Debug Dump:", font=("Courier", 10)).pack(side=tk.LEFT, padx=(10, 10))
@@ -1853,6 +1876,7 @@ class ZoomableCfaViewer(tk.Tk):
             self.marked_pixels = set()
 
         self.filename = filename
+        self._refresh_temporal_range()
         if filename:
             basename = os.path.basename(filename)
             self.title(f"tv - {basename}")
@@ -2013,33 +2037,67 @@ class ZoomableCfaViewer(tk.Tk):
             self.hist_sigma_var.set(self.hist_sigma)
 
     def _build_plot_panel(self):
-        panel = ttk.LabelFrame(self, text="Plot regions (end coordinates exclusive)", padding=5)
-        panel.pack(side=tk.TOP, fill=tk.X, padx=5)
-        self.region_text = tk.Text(panel, height=3, width=48, undo=True)
-        self.region_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        scrollbar = ttk.Scrollbar(panel, command=self.region_text.yview)
-        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
+        panel = ttk.LabelFrame(self.settings_panes, text="Plot regions (end coordinates exclusive)", padding=5)
+        self.settings_panes.add(panel, weight=2)
+        ttk.Label(panel, text="XSTART,YSTART,XEND,YEND,STYLE (e.g. b-)").pack(anchor=tk.W)
+        editor = ttk.Frame(panel)
+        editor.pack(fill=tk.BOTH, expand=True)
+        self.region_text = tk.Text(editor, height=5, width=42, undo=True, wrap=tk.NONE)
+        self.region_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar = ttk.Scrollbar(editor, command=self.region_text.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.region_text.configure(yscrollcommand=scrollbar.set)
-        controls = ttk.Frame(panel)
-        controls.pack(side=tk.LEFT, padx=5)
-        ttk.Label(controls, text="XSTART,YSTART,XEND,YEND,STYLE (e.g. b-)").pack(anchor=tk.W)
-        buttons = ttk.Frame(controls)
-        buttons.pack(anchor=tk.W)
+        buttons = ttk.Frame(panel)
+        buttons.pack(fill=tk.X, pady=(4, 0))
         ttk.Button(buttons, text="Add full image", command=self._add_full_region).pack(side=tk.LEFT)
         ttk.Button(buttons, text="Histogram", command=self.on_histogram).pack(side=tk.LEFT)
-        ttk.Button(buttons, text="temporal_scatterplot", command=self.on_temporal_scatterplot).pack(side=tk.LEFT)
-        options = ttk.Frame(controls)
-        options.pack(anchor=tk.W)
         self.hist_merge_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(options, text="Merge histogram regions", variable=self.hist_merge_var).pack(side=tk.LEFT)
+        ttk.Checkbutton(panel, text="Merge histogram regions", variable=self.hist_merge_var).pack(anchor=tk.W)
+        temporal = ttk.LabelFrame(panel, text="Temporal plotting", padding=4)
+        temporal.pack(fill=tk.X, pady=(4, 0))
+        temporal.columnconfigure(1, weight=1)
+        self.temporal_start_var = tk.StringVar(value="")
+        self.temporal_end_var = tk.StringVar(value="")
+        self._temporal_range_key = None
+        for row, label, variable in (
+            (0, "Start file", self.temporal_start_var),
+            (1, "End file", self.temporal_end_var),
+        ):
+            ttk.Label(temporal, text=label).grid(row=row, column=0, sticky=tk.W, padx=(0, 5))
+            ttk.Entry(temporal, textvariable=variable).grid(row=row, column=1, sticky=tk.EW)
+        actions = ttk.Frame(temporal)
+        actions.grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=(4, 0))
         self.temporal_mode_var = tk.StringVar(value="Pixels")
         ttk.Combobox(
-            options,
+            actions,
             textvariable=self.temporal_mode_var,
             values=["Pixels", "Average", "Heatmap"],
             state="readonly",
-            width=10,
+            width=9,
         ).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Full range", command=lambda: self._refresh_temporal_range(force=True)).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(actions, text="temporal_scatterplot", command=self.on_temporal_scatterplot).pack(side=tk.LEFT)
+        self._refresh_temporal_range()
+
+    def _refresh_temporal_range(self, force=False):
+        """Autofill a new series, preserving edits when opening another frame of the same series."""
+        try:
+            if not self.filename:
+                raise ValueError("No file selected")
+            files, xlabel = temporal_files(self.filename)
+        except (ValueError, OSError):
+            self.temporal_start_var.set("")
+            self.temporal_end_var.set("")
+            self._temporal_range_key = None
+            return
+        first, last = files[0][1], files[-1][1]
+        key = (str(first.parent.resolve()), first.stem.rsplit("_", 1)[0], xlabel == "Time (filename suffix)")
+        if force or key != self._temporal_range_key:
+            self.temporal_start_var.set(first.name)
+            self.temporal_end_var.set(last.name)
+            self._temporal_range_key = key
 
     def _add_full_region(self):
         self._add_region(0, 0, self.full_cols, self.full_rows)
@@ -2133,9 +2191,6 @@ class ZoomableCfaViewer(tk.Tk):
             messagebox.showerror("Histogram", str(exc), parent=self)
 
     def on_temporal_scatterplot(self):
-        from matplotlib.colors import LinearSegmentedColormap
-        from matplotlib.figure import Figure
-
         try:
             regions = self._plot_regions()
             channels = self._plot_channels()
@@ -2143,20 +2198,31 @@ class ZoomableCfaViewer(tk.Tk):
                 raise ValueError("Enable at least one Bayer channel.")
             if not self.filename:
                 raise ValueError("Open a TIFF with a numeric time suffix first.")
-            files, xlabel = temporal_files(self.filename)
+            files, xlabel = temporal_files(self.filename, self.temporal_start_var.get(), self.temporal_end_var.get())
             mode = self.temporal_mode_var.get()
-            samples = [[[] for _ in channels] for _ in regions]
-            for _, path in files:
-                raw = read_tiff_2d(path)
-                if raw.shape != (self.full_rows, self.full_cols):
-                    raise ValueError(f"{path.name}: image dimensions do not match the current image.")
-                data = self._analysis_data(raw)
-                for ri, region in enumerate(regions):
-                    for ci, channel in enumerate(channels):
-                        values = self._region_values(data, region, channel)
-                        if mode == "Average" and values.size:
-                            values = np.array([values.mean()])
-                        samples[ri][ci].append(values.copy())
+            dark = self.dark_image_data if self.dark_image_subtract_enabled else None
+            correction = (self.row_corr_offset, self.row_corr_width) if self.row_correction_enabled else None
+            # Snapshot GUI options before starting the worker; it must never access Tk.
+            pattern = dict(self.BAYER_PATTERN)
+            shape = (self.full_rows, self.full_cols)
+            msb, lsb = self.bit_msb, self.bit_lsb
+
+            def load(progress, cancelled):
+                return collect_temporal_samples(
+                    files, regions, channels, pattern, shape, msb, lsb, dark, correction, mode, progress, cancelled
+                )
+
+            self._run_plot_job(
+                load, lambda samples: self._finish_temporal_plot(regions, channels, files, xlabel, samples, mode)
+            )
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Temporal plot", str(exc), parent=self)
+
+    def _finish_temporal_plot(self, regions, channels, files, xlabel, samples, mode):
+        from matplotlib.colors import LinearSegmentedColormap
+        from matplotlib.figure import Figure
+
+        try:
             times = np.array([time for time, _ in files])
             fig = Figure(figsize=(5 * len(channels), 4))
             axes = fig.subplots(1, len(channels), squeeze=False)[0]
@@ -2179,16 +2245,15 @@ class ZoomableCfaViewer(tk.Tk):
                             label=label,
                         )
                     elif mode == "Pixels":
-                        for ti, pixels in zip(times, values):
-                            ax.scatter(
-                                np.full(pixels.size, ti),
-                                pixels,
-                                color=color,
-                                s=3,
-                                alpha=0.25,
-                                label=label if ti == times[0] else None,
-                                rasterized=True,
-                            )
+                        ax.scatter(
+                            np.repeat(times, [pixels.size for pixels in values]),
+                            np.concatenate(values),
+                            color=color,
+                            s=3,
+                            alpha=0.25,
+                            label=label,
+                            rasterized=True,
+                        )
                     else:
                         # Midpoint edges retain the physical spacing of irregular time samples.
                         unique = np.unique(times)
@@ -2197,12 +2262,14 @@ class ZoomableCfaViewer(tk.Tk):
                             (unique[:-1] + unique[1:]) / 2,
                             unique[-1] + (unique[-1] - unique[-2]) / 2,
                         ]
-                        bins = np.histogram_bin_edges(np.concatenate(values), bins=100)
+                        bins = np.histogram_bin_edges(
+                            [min(v.min() for v in values), max(v.max() for v in values)], bins=100
+                        )
                         counts = np.stack(
                             [
-                                np.histogram(
-                                    np.concatenate([v for t, v in zip(times, values) if t == time]), bins=bins
-                                )[0]
+                                np.sum(
+                                    [np.histogram(v, bins=bins)[0] for t, v in zip(times, values) if t == time], axis=0
+                                )
                                 for time in unique
                             ],
                             axis=1,
@@ -2231,36 +2298,161 @@ class ZoomableCfaViewer(tk.Tk):
         except (ValueError, OSError) as exc:
             messagebox.showerror("Temporal plot", str(exc), parent=self)
 
+    def _run_plot_job(self, load, complete):
+        """Load in a worker, dispatching all Tk and plotting operations on the UI thread."""
+        window = tk.Toplevel(self)
+        window.title("tv - Loading temporal regions")
+        status = ttk.Label(window, text="Reading TIFF regions…", padding=10)
+        status.pack()
+        progress = ttk.Progressbar(window, length=320, mode="determinate")
+        progress.pack(padx=10, pady=5)
+        cancelled = threading.Event()
+        events = queue.Queue()
+
+        def cancel():
+            cancelled.set()
+            status.config(text="Cancelling after the current frame…")
+
+        ttk.Button(window, text="Cancel", command=cancel).pack(pady=5)
+        window.protocol("WM_DELETE_WINDOW", cancel)
+
+        def worker():
+            try:
+                result = load(lambda n, total: events.put(("progress", (n, total))), cancelled)
+                events.put(("done", result))
+            except Exception as exc:
+                events.put(("error", str(exc)))
+
+        def poll():
+            try:
+                while True:
+                    kind, value = events.get_nowait()
+                    if kind == "progress":
+                        n, total = value
+                        progress.config(maximum=total, value=n)
+                        if not cancelled.is_set():
+                            status.config(text=f"Read {n} / {total} frames")
+                    else:
+                        window.destroy()
+                        if not cancelled.is_set():
+                            if kind == "error":
+                                messagebox.showerror("Temporal plot", value, parent=self)
+                            elif value is not None:
+                                complete(value)
+                        return
+            except queue.Empty:
+                pass
+            self.after(100, poll)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(100, poll)
+
     def _display_histogram(self, fig):
-        """Display a figure, including on Python builds incompatible with TkAgg."""
+        """Display a figure with axis controls even when native TkAgg is unavailable."""
+        window = tk.Toplevel(self)
+        window.title("tv - Plot")
         try:
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
         except ImportError:
-            # Some managed Python builds support Tk but cannot load TkAgg's
-            # native extension. Render a PNG and let Tk display it directly.
             from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-            buf = io.BytesIO()
-            FigureCanvasAgg(fig).print_png(buf)
-            window = tk.Toplevel(self)
-            window.title("tv - Plot")
-            photo = tk.PhotoImage(master=window, data=buf.getvalue())
-            label = ttk.Label(window, image=photo)
-            label.pack(fill=tk.BOTH, expand=True)
-            window.histogram_image = photo
-            return
+            canvas = FigureCanvasAgg(fig)
+            label = ttk.Label(window)
+            label.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
 
-        window = tk.Toplevel(self)
-        window.title("tv - Plot")
-        canvas = FigureCanvasTkAgg(fig, master=window)
-        toolbar = NavigationToolbar2Tk(canvas, window, pack_toolbar=False)
-        toolbar.update()
-        toolbar.pack(side=tk.BOTTOM, fill=tk.X)
-        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        # Keep the canvas and toolbar alive for the lifetime of the window.
+            def draw():
+                buf = io.BytesIO()
+                canvas.print_png(buf)
+                photo = tk.PhotoImage(master=window, data=buf.getvalue())
+                label.config(image=photo)
+                window.histogram_image = photo
+
+            def save():
+                path = filedialog.asksaveasfilename(
+                    parent=window, defaultextension=".png", filetypes=[("PNG", "*.png"), ("PDF", "*.pdf")]
+                )
+                if path:
+                    fig.savefig(path)
+
+            ttk.Button(window, text="Save plot…", command=save).pack(side=tk.TOP, anchor=tk.W)
+        else:
+            canvas = FigureCanvasTkAgg(fig, master=window)
+            toolbar = NavigationToolbar2Tk(canvas, window, pack_toolbar=False)
+            toolbar.update()
+            toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+            canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+            window.histogram_toolbar = toolbar
+            draw = canvas.draw_idle
+
         window.histogram_canvas = canvas
-        window.histogram_toolbar = toolbar
-        canvas.draw()
+        self._build_plot_axis_controls(window, fig, draw)
+        draw()
+
+    def _build_plot_axis_controls(self, window, fig, draw):
+        axes = [ax for ax in fig.axes if ax.get_label() != "<colorbar>"]
+        original = [(ax.get_xlim(), ax.get_ylim(), ax.get_xscale(), ax.get_yscale()) for ax in axes]
+        frame = ttk.Frame(window, padding=5)
+        frame.pack(side=tk.TOP, fill=tk.X)
+        selection = tk.StringVar(master=window, value="All panels")
+        names = [f"{i + 1}: {ax.get_title().splitlines()[0]}" for i, ax in enumerate(axes)]
+        chooser = ttk.Combobox(frame, textvariable=selection, values=["All panels"] + names, state="readonly", width=22)
+        chooser.pack(side=tk.LEFT)
+        variables = []
+        for name in ("X min", "X max", "Y min", "Y max"):
+            ttk.Label(frame, text=name).pack(side=tk.LEFT, padx=(6, 2))
+            var = tk.StringVar(master=window)
+            ttk.Entry(frame, textvariable=var, width=10).pack(side=tk.LEFT)
+            variables.append(var)
+        scales = []
+        for name in ("X", "Y"):
+            ttk.Label(frame, text=name).pack(side=tk.LEFT, padx=(6, 2))
+            var = tk.StringVar(master=window, value="linear")
+            ttk.Combobox(frame, textvariable=var, values=["linear", "log"], state="readonly", width=7).pack(
+                side=tk.LEFT
+            )
+            scales.append(var)
+
+        def targets():
+            return axes if selection.get() == "All panels" else [axes[names.index(selection.get())]]
+
+        def refresh(event=None):
+            ax = targets()[0]
+            for var, value in zip(variables, (*ax.get_xlim(), *ax.get_ylim())):
+                var.set(f"{value:.9g}")
+            for var, value in zip(scales, (ax.get_xscale(), ax.get_yscale())):
+                var.set(value)
+
+        def apply():
+            try:
+                limits = [float(var.get()) for var in variables]
+                if not all(np.isfinite(limits)) or limits[0] == limits[1] or limits[2] == limits[3]:
+                    raise ValueError("Axis limits must be finite and different.")
+                for scale, pair in zip(scales, (limits[:2], limits[2:])):
+                    if scale.get() == "log" and min(pair) <= 0:
+                        raise ValueError("Logarithmic axes require positive limits.")
+                for ax in targets():
+                    ax.set_xscale(scales[0].get())
+                    ax.set_yscale(scales[1].get())
+                    ax.set_xlim(*limits[:2])
+                    ax.set_ylim(*limits[2:])
+                draw()
+            except ValueError as exc:
+                messagebox.showerror("Axis limits", str(exc), parent=window)
+
+        def reset():
+            for ax in targets():
+                xlim, ylim, xs, ys = original[axes.index(ax)]
+                ax.set_xscale(xs)
+                ax.set_yscale(ys)
+                ax.set_xlim(xlim)
+                ax.set_ylim(ylim)
+            refresh()
+            draw()
+
+        chooser.bind("<<ComboboxSelected>>", refresh)
+        ttk.Button(frame, text="Apply", command=apply).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame, text="Reset axes", command=reset).pack(side=tk.LEFT)
+        refresh()
 
     # ------------------------------------------------------------------
     # Mouse / zoom / pan
