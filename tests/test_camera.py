@@ -1,12 +1,15 @@
 import json
 import tempfile
+import tkinter as tk
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from tifffile import imwrite
 
 from tv.camera import camera_metadata, camera_readout, neutral_gains, preview_rgb
+from tv.viewer import ZoomableCfaViewer
 
 
 class CameraTests(unittest.TestCase):
@@ -22,6 +25,38 @@ class CameraTests(unittest.TestCase):
             self.assertEqual(record["black_level"], 30)
             self.assertEqual(record["white_level"], 55000)
             self.assertTrue(record["recognized"])
+
+    def test_only_preset_white_balance_is_used_on_open(self):
+        interpreter = tk.Tcl()
+        viewer = ZoomableCfaViewer.__new__(ZoomableCfaViewer)
+        viewer.filename = "img1_blend3.tif"
+        viewer.camera_fields = {
+            name: tk.StringVar(master=interpreter) for name in ("Black", "White", "WB R", "WB G", "WB B", "EV")
+        }
+        viewer.camera_enabled = tk.BooleanVar(master=interpreter)
+        viewer.BAYER_PATTERNS = {}
+        calls = []
+        viewer._auto_camera = lambda **kwargs: calls.append(kwargs)
+        metadata = {
+            "black_level": 24,
+            "white_level": 55250,
+            "recognized": True,
+            "wb_already_applied": [2.73, 1, 1.41],
+            "channel_gains_already_applied": [4, 2, 3],
+            "wb_applied": [7, 1, 9],
+            "channel_gains_applied": [8, 1, 6],
+        }
+        for preset, expected in (
+            ({}, [1, 1, 1]),
+            ({"wb": [1, 1, 1], "fwd-matrix": np.eye(3).tolist()}, [1, 1, 1]),
+            ({"wb": [4, 2, 3]}, [2, 1, 1.5]),
+        ):
+            with patch("tv.viewer.camera_metadata", return_value={**metadata, "color_matrix": preset}):
+                viewer._load_camera_defaults()
+            actual = [float(viewer.camera_fields[name].get()) for name in ("WB R", "WB G", "WB B")]
+            np.testing.assert_allclose(actual, expected)
+            np.testing.assert_array_equal(viewer.camera_matrix, np.eye(3))
+            self.assertEqual(calls[-1], {"balance": False})
 
     def test_neutral_patch_and_readout(self):
         planes = [np.array([value, 65535, 0]) for value in (1000, 2000, 2000, 4000)]

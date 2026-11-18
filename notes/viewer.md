@@ -214,3 +214,11 @@ black, HG clip (when present), and white levels. These file-level markers are om
 when dark or row correction is active because their original DN coordinates would
 no longer describe the corrected distribution. The existing sigma window can hide
 markers outside its range.
+
+On open, camera preview takes residual white balance only from `color_matrix.wb`
+(normalized to green; unity if absent) and the matrix from `color_matrix.fwd-matrix`
+(identity if absent). `wb_already_applied`, `channel_gains_already_applied`, and their
+legacy `*_applied` names are informational: their gains are never multiplied into
+pixels again. Automatic exposure still runs on open, but gray-world balance runs
+only when **Auto WB / exposure** is pressed. **Click neutral patch** and manual WB
+fields also explicitly override the residual balance.

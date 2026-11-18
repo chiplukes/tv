@@ -683,10 +683,22 @@ class ZoomableCfaViewer(tk.Tk):
             self.bayer_pattern_type = cfa
             self.BAYER_PATTERN = self.BAYER_PATTERNS[cfa]
             self.bayer_pattern_var.set(cfa)
+        # Camera gains (including legacy *_applied keys) describe pixel history,
+        # never another transform. Only the display preset supplies residual WB.
+        wb = np.ones(3)
+        if isinstance(preset, dict):
+            try:
+                candidate = np.asarray(preset.get("wb", [1, 1, 1]), dtype=float).reshape(3)
+                if np.isfinite(candidate).all() and (candidate > 0).all():
+                    wb = candidate / candidate[1]
+            except (ValueError, TypeError):
+                pass
+        for name, gain in zip(("WB R", "WB G", "WB B"), wb):
+            self.camera_fields[name].set(f"{gain:.6g}")
         self.camera_enabled.set(meta["recognized"])
-        self._auto_camera()
+        self._auto_camera(balance=False)
 
-    def _auto_camera(self):
+    def _auto_camera(self, balance=True):
         try:
             black = float(self.camera_fields["Black"].get())
             white = float(self.camera_fields["White"].get())
@@ -702,8 +714,9 @@ class ZoomableCfaViewer(tk.Tk):
                 valid = values[(values > 0.005) & (values < 0.95)]
                 means.append(float(np.mean(valid)) if valid.size else 0.18)
             green = (means[1] + means[2]) / 2
-            for name, value in zip(("WB R", "WB G", "WB B"), (green / means[0], 1, green / means[3])):
-                self.camera_fields[name].set(f"{value:.5g}")
+            if balance:
+                for name, value in zip(("WB R", "WB G", "WB B"), (green / means[0], 1, green / means[3])):
+                    self.camera_fields[name].set(f"{value:.5g}")
             self.camera_fields["EV"].set(f"{np.clip(np.log2(0.18 / green), -12, 12):.4g}")
         except (ValueError, ZeroDivisionError):
             pass
@@ -2417,7 +2430,9 @@ class ZoomableCfaViewer(tk.Tk):
                                 ("hg_clip_level", "HG clip"),
                                 ("white_level", "White"),
                             ):
-                                if key in meta and not (self.dark_image_subtract_enabled or self.row_correction_enabled):
+                                if key in meta and not (
+                                    self.dark_image_subtract_enabled or self.row_correction_enabled
+                                ):
                                     ax.axvline(float(meta[key]), linestyle=":", label=label)
                             ax.legend(fontsize="small")
                         span = max(self.hist_sigma * std, 0.5)
