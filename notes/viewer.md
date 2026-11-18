@@ -191,3 +191,26 @@ images. Choose **All panels** to restore the original arrangement.
 Use the Matplotlib toolbar for mouse pan and rectangle zoom, navigation history,
 and saving. Numeric axis fields and scale selectors have been removed. On Python
 builds without TkAgg, the PNG fallback supports channel selection and **Save plot…**.
+
+### Camera inspection controls
+
+**Click neutral patch** arms the next image click to balance a 17×17 neutral patch.
+It averages valid, above-black, unsaturated samples separately on the four Bayer
+lattices and normalizes the RGB gains to green. Choose a patch with signal in every
+channel. It adjusts residual white balance only, leaving exposure unchanged.
+
+**Clipping overlay** marks sampled raw Bayer cells at or above the configured white
+level in magenta, independent of display exposure. At fit-to-screen scale the overlay
+uses the display sampling grid; small clipped features between samples can be missed.
+
+For recognized camera files, the cursor adds counts relative to black (using metadata
+`units_per_count`) and stops below white. Nonpositive signals show infinite stops;
+values above white show negative stops. **Statistics** in the regions panel opens a
+per-region, per-Bayer-channel table of pixel count, mean, median, and population
+standard deviation in signed calibrated DN, before display processing.
+
+Camera histograms use logarithmic counts. For uncalibrated data they mark metadata
+black, HG clip (when present), and white levels. These file-level markers are omitted
+when dark or row correction is active because their original DN coordinates would
+no longer describe the corrected distribution. The existing sigma window can hide
+markers outside its range.

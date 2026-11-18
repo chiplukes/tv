@@ -6,13 +6,14 @@ import os
 import queue
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
 from tifffile import imread
 
+from .camera import camera_metadata, camera_readout, neutral_gains, preview_rgb
 from .plotting import PlotPanelLayout, collect_temporal_samples, parse_regions, style_properties, temporal_files
 
 IMAGE_FILETYPES = [("TIFF files", ("*.tif", "*.tiff", "*.dng")), ("All files", "*")]
@@ -165,6 +166,7 @@ class ZoomableCfaViewer(tk.Tk):
         self._build_dark_panel()
         self._build_dark_image_panel()
         self._build_color_panel()
+        self._build_camera_panel()
         self._build_flat_panel()
         self._build_goto_panel()
         self._build_debug_panel()
@@ -534,6 +536,179 @@ class ZoomableCfaViewer(tk.Tk):
 
         self.export_button = ttk.Button(color_frame, text="Export View", command=self.on_export_view)
         self.export_button.pack(side=tk.LEFT, padx=(20, 10))
+
+    def _build_camera_panel(self):
+        panel = ttk.LabelFrame(self.settings_frame, text="Camera preview (display only)", padding=4)
+        panel.pack(fill=tk.X, padx=5)
+        self.camera_enabled = tk.BooleanVar(value=False)
+        ttk.Checkbutton(panel, text="Enable", variable=self.camera_enabled, command=self.redraw).pack(side=tk.LEFT)
+        self.camera_fields = {}
+        for name, value in (
+            ("Black", 0),
+            ("White", 65535),
+            ("EV", 0),
+            ("Saturation", 1.4),
+            ("WB R", 1),
+            ("WB G", 1),
+            ("WB B", 1),
+        ):
+            ttk.Label(panel, text=name).pack(side=tk.LEFT)
+            var = tk.StringVar(value=str(value))
+            entry = ttk.Entry(panel, textvariable=var, width=7)
+            entry.pack(side=tk.LEFT)
+            entry.bind("<Return>", lambda event: self.redraw())
+            self.camera_fields[name] = var
+        self.camera_shoulder = tk.BooleanVar(value=True)
+        ttk.Checkbutton(panel, text="Shoulder", variable=self.camera_shoulder, command=self.redraw).pack(side=tk.LEFT)
+        ttk.Button(panel, text="Auto WB / exposure", command=self._auto_camera).pack(side=tk.LEFT)
+        ttk.Button(panel, text="Metadata defaults", command=self._load_camera_defaults).pack(side=tk.LEFT)
+        ttk.Button(panel, text="Edit matrix", command=self._edit_camera_matrix).pack(side=tk.LEFT)
+        ttk.Button(panel, text="Click neutral patch", command=self._arm_neutral_pick).pack(side=tk.LEFT)
+        self.neutral_pick_active = False
+        self.camera_clip_overlay = tk.BooleanVar(value=False)
+        ttk.Checkbutton(panel, text="Clipping overlay", variable=self.camera_clip_overlay, command=self.redraw).pack(
+            side=tk.LEFT
+        )
+        self.camera_matrix = np.eye(3)
+        self._load_camera_defaults()
+
+    def _arm_neutral_pick(self):
+        self.neutral_pick_active = True
+        self.canvas.config(cursor="cross")
+
+    def _linear_region(self, region):
+        x0, y0, x1, y1 = region[:4]
+        data = self.data_raw[y0:y1, x0:x1].astype(float)
+        if self.dark_image_subtract_enabled and self.dark_image_data is not None:
+            data -= self.dark_image_data[y0:y1, x0:x1]
+        if self.row_correction_enabled and self.row_corr_averages is not None:
+            data -= self.row_corr_averages[y0:y1, None]
+        return data
+
+    def _neutral_pick(self, event):
+        coords = self._event_to_array_coords(event)
+        if coords is None:
+            return
+        x, y = coords
+        region = (max(0, x - 8), max(0, y - 8), min(self.full_cols, x + 9), min(self.full_rows, y + 9), "b-")
+        data = self._linear_region(region)
+        x0, y0 = region[:2]
+        planes = [data[(row - y0) % 2 :: 2, (col - x0) % 2 :: 2] for row, col in self.get_bayer_offsets()]
+        try:
+            black = float(self.camera_fields["Black"].get())
+            white = float(self.camera_fields["White"].get())
+            if self.dark_image_subtract_enabled or self.row_correction_enabled:
+                white -= black
+                black = 0
+            gains = neutral_gains(planes, black, white)
+            for name, gain in zip(("WB R", "WB G", "WB B"), gains):
+                self.camera_fields[name].set(f"{gain:.6g}")
+            self.camera_enabled.set(True)
+            self.redraw()
+        except ValueError as exc:
+            messagebox.showerror("Neutral balance", str(exc), parent=self)
+        self.neutral_pick_active = False
+        self.canvas.config(cursor="")
+
+    def on_region_statistics(self):
+        try:
+            regions = self._plot_regions()
+            results = []
+            for number, region in enumerate(regions, 1):
+                data = self._linear_region(region)
+                x0, y0 = region[:2]
+                for (row, col), channel in self.BAYER_PATTERN.items():
+                    values = data[(row - y0) % 2 :: 2, (col - x0) % 2 :: 2].ravel()
+                    if values.size:
+                        results.append(
+                            (
+                                number,
+                                channel,
+                                values.size,
+                                f"{values.mean():.6g}",
+                                f"{np.median(values):.6g}",
+                                f"{values.std():.6g}",
+                            )
+                        )
+            window = tk.Toplevel(self)
+            window.title("tv - Linear region statistics (calibrated DN)")
+            columns = ("Region", "Channel", "Pixels", "Mean", "Median", "Std dev")
+            table = ttk.Treeview(window, columns=columns, show="headings")
+            for column in columns:
+                table.heading(column, text=column)
+                table.column(column, width=100)
+            scroll = ttk.Scrollbar(window, command=table.yview)
+            scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            table.configure(yscrollcommand=scroll.set)
+            table.pack(fill=tk.BOTH, expand=True)
+            for result in results:
+                table.insert("", tk.END, values=result)
+        except ValueError as exc:
+            messagebox.showerror("Region statistics", str(exc), parent=self)
+
+    def _edit_camera_matrix(self):
+        text = simpledialog.askstring(
+            "Camera matrix",
+            "Enter nine row-major coefficients, separated by spaces:",
+            initialvalue=" ".join(map(str, self.camera_matrix.ravel())),
+            parent=self,
+        )
+        if text is None:
+            return
+        try:
+            matrix = np.asarray([float(v) for v in text.replace(",", " ").split()]).reshape(3, 3)
+            if not np.isfinite(matrix).all():
+                raise ValueError
+            self.camera_matrix = matrix
+            self.redraw()
+        except ValueError:
+            messagebox.showerror("Camera matrix", "Enter nine finite numbers.", parent=self)
+
+    def _load_camera_defaults(self):
+        meta = camera_metadata(self.filename)
+        self.camera_meta = meta
+        for name, key in (("Black", "black_level"), ("White", "white_level")):
+            self.camera_fields[name].set(str(meta[key]))
+        self.camera_matrix = np.eye(3)
+        preset = meta.get("color_matrix", {})
+        if isinstance(preset, dict):
+            try:
+                matrix = np.asarray(preset.get("fwd-matrix", np.eye(3)), dtype=float).reshape(3, 3)
+                if np.isfinite(matrix).all():
+                    self.camera_matrix = matrix
+            except (ValueError, TypeError):
+                pass
+        cfa = meta.get("cfa")
+        if cfa in self.BAYER_PATTERNS:
+            self.bayer_pattern_type = cfa
+            self.BAYER_PATTERN = self.BAYER_PATTERNS[cfa]
+            self.bayer_pattern_var.set(cfa)
+        self.camera_enabled.set(meta["recognized"])
+        self._auto_camera()
+
+    def _auto_camera(self):
+        try:
+            black = float(self.camera_fields["Black"].get())
+            white = float(self.camera_fields["White"].get())
+            # Sample a central crop on the Bayer lattice, bounded independently of sensor size.
+            y0, x0 = (self.full_rows // 4) // 2 * 2, (self.full_cols // 4) // 2 * 2
+            step = max(2, (max(self.full_rows, self.full_cols) // 512) // 2 * 2)
+            means = []
+            for row, col in self.get_bayer_offsets():
+                values = self.data[
+                    y0 + row : 3 * self.full_rows // 4 : step, x0 + col : 3 * self.full_cols // 4 : step
+                ].astype(float)
+                values = (values - black) / (white - black)
+                valid = values[(values > 0.005) & (values < 0.95)]
+                means.append(float(np.mean(valid)) if valid.size else 0.18)
+            green = (means[1] + means[2]) / 2
+            for name, value in zip(("WB R", "WB G", "WB B"), (green / means[0], 1, green / means[3])):
+                self.camera_fields[name].set(f"{value:.5g}")
+            self.camera_fields["EV"].set(f"{np.clip(np.log2(0.18 / green), -12, 12):.4g}")
+        except (ValueError, ZeroDivisionError):
+            pass
+        if hasattr(self, "canvas"):
+            self.redraw()
 
     def _build_flat_panel(self):
         flat_frame = ttk.Frame(self.settings_frame, padding="5 5 5 5")
@@ -911,6 +1086,28 @@ class ZoomableCfaViewer(tk.Tk):
         img = self._render_image(data_slice, x_start, y_start, x_end, y_end, downsample, display_w, display_h)
 
         img = img.resize((display_w, display_h), Image.NEAREST)
+        if self.camera_clip_overlay.get():
+            try:
+                white = float(self.camera_fields["White"].get())
+                geom = self._render_geom
+                step = max(2, 2 * int(max(geom["raw_span_w"] / display_w, geom["raw_span_h"] / display_h) / 2))
+                masks = []
+                for row, col in self.get_bayer_offsets():
+                    sample = self.data_raw[
+                        y_start + row : y_start + geom["raw_span_h"] : step,
+                        x_start + col : x_start + geom["raw_span_w"] : step,
+                    ]
+                    masks.append(sample >= white)
+                h, w = min(m.shape[0] for m in masks), min(m.shape[1] for m in masks)
+                if h and w:
+                    mask = np.logical_or.reduce([m[:h, :w] for m in masks])
+                    overlay = Image.fromarray((mask * 255).astype(np.uint8)).resize(
+                        (display_w, display_h), Image.NEAREST
+                    )
+                    img = img.convert("RGB")
+                    img.paste((255, 0, 255), mask=overlay)
+            except ValueError:
+                pass
         self.image_tk = self._pil_to_photoimage(img)
         self.canvas.create_image(self.display_x, self.display_y, image=self.image_tk, anchor="nw")
 
@@ -935,6 +1132,29 @@ class ZoomableCfaViewer(tk.Tk):
 
     def _gamma_scale_rgb(self, r_slice, gr_slice, gb_slice, b_slice):
         """Normalize, gamma-correct, colour-adjust, and return (r, g, b) uint8 arrays."""
+        if self.camera_enabled.get():
+            try:
+                fields = {name: float(var.get()) for name, var in self.camera_fields.items()}
+                if fields["White"] > fields["Black"] and all(np.isfinite(list(fields.values()))):
+                    wb = [fields[name] for name in ("WB R", "WB G", "WB B")]
+                    if min(wb) > 0 and abs(fields["EV"]) <= 20:
+                        planes = [p.astype(np.float32) for p in (r_slice, gr_slice, gb_slice, b_slice)]
+                        if self.dark_image_subtract_enabled or self.row_correction_enabled:
+                            fields["White"] -= fields["Black"]
+                            fields["Black"] = 0
+                        rgb = preview_rgb(
+                            planes,
+                            fields["Black"],
+                            fields["White"],
+                            wb,
+                            fields["EV"],
+                            self.camera_matrix,
+                            fields["Saturation"],
+                            self.camera_shoulder.get(),
+                        )
+                        return rgb[..., 0], rgb[..., 1], rgb[..., 2]
+            except (ValueError, tk.TclError):
+                pass
         min_val, max_val = self.data_min, self.data_max
         if max_val == min_val:
             return (
@@ -1545,6 +1765,18 @@ class ZoomableCfaViewer(tk.Tk):
                 self.value_label.config(text=f"Value: {raw_value}")
                 self.row_avg_label.config(text="Row Avg: N/A")
 
+            try:
+                if self.camera_meta.get("recognized"):
+                    black = float(self.camera_fields["Black"].get())
+                    white = float(self.camera_fields["White"].get())
+                    units = float(self.camera_meta.get("units_per_count", 16 if black == 24 else 1))
+                    if units > 0:
+                        counts, stops = camera_readout(float(raw_value), black, white, units)
+                        existing = self.value_label.cget("text")
+                        self.value_label.config(text=f"{existing} | Counts: {counts:.2f} | Stops to clip: {stops:.2f}")
+            except (ValueError, TypeError):
+                pass
+
             # Flat-field deviation readout
             if self.flat_mode_enabled and self._flat_deviation is not None and self._flat_params is not None:
                 p = self._flat_params
@@ -1876,6 +2108,7 @@ class ZoomableCfaViewer(tk.Tk):
             self.marked_pixels = set()
 
         self.filename = filename
+        self._load_camera_defaults()
         self._refresh_temporal_range()
         if filename:
             basename = os.path.basename(filename)
@@ -2051,6 +2284,7 @@ class ZoomableCfaViewer(tk.Tk):
         buttons.pack(fill=tk.X, pady=(4, 0))
         ttk.Button(buttons, text="Add full image", command=self._add_full_region).pack(side=tk.LEFT)
         ttk.Button(buttons, text="Histogram", command=self.on_histogram).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Statistics", command=self.on_region_statistics).pack(side=tk.LEFT)
         self.hist_merge_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(panel, text="Merge histogram regions", variable=self.hist_merge_var).pack(anchor=tk.W)
         temporal = ttk.LabelFrame(panel, text="Temporal plotting", padding=4)
@@ -2175,6 +2409,17 @@ class ZoomableCfaViewer(tk.Tk):
                     if values.size:
                         mean, std = values.mean(), values.std()
                         ax.hist(values, bins="auto", color=color, edgecolor="black", linewidth=0.3)
+                        meta = self.__dict__.get("camera_meta", {})
+                        if meta.get("recognized"):
+                            ax.set_yscale("log")
+                            for key, label in (
+                                ("black_level", "Black"),
+                                ("hg_clip_level", "HG clip"),
+                                ("white_level", "White"),
+                            ):
+                                if key in meta and not (self.dark_image_subtract_enabled or self.row_correction_enabled):
+                                    ax.axvline(float(meta[key]), linestyle=":", label=label)
+                            ax.legend(fontsize="small")
                         span = max(self.hist_sigma * std, 0.5)
                         ax.set_xlim(mean - span, mean + span)
                         ax.set_title(
@@ -2416,6 +2661,10 @@ class ZoomableCfaViewer(tk.Tk):
     # ------------------------------------------------------------------
 
     def on_mouse_down(self, event):
+        if self.neutral_pick_active:
+            self._neutral_pick(event)
+            self._neutral_pick_release = True
+            return
         if event.state & 0x0004:  # Ctrl
             if (
                 self.display_x <= event.x < self.display_x + self.display_w
@@ -2475,6 +2724,8 @@ class ZoomableCfaViewer(tk.Tk):
             self.redraw()
 
     def on_mouse_up(self, event):
+        if self.__dict__.pop("_neutral_pick_release", False):
+            return
         if self.hist_rect_active:
             if self.hist_rect_id:
                 self.canvas.delete(self.hist_rect_id)
