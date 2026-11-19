@@ -560,7 +560,8 @@ class ZoomableCfaViewer(tk.Tk):
             self.camera_fields[name] = var
         self.camera_shoulder = tk.BooleanVar(value=True)
         ttk.Checkbutton(panel, text="Shoulder", variable=self.camera_shoulder, command=self.redraw).pack(side=tk.LEFT)
-        ttk.Button(panel, text="Auto WB / exposure", command=self._auto_camera).pack(side=tk.LEFT)
+        ttk.Button(panel, text="Auto exposure", command=self._auto_exposure).pack(side=tk.LEFT)
+        ttk.Button(panel, text="Auto white balance", command=self._auto_white_balance).pack(side=tk.LEFT)
         ttk.Button(panel, text="Metadata defaults", command=self._load_camera_defaults).pack(side=tk.LEFT)
         ttk.Button(panel, text="Edit matrix", command=self._edit_camera_matrix).pack(side=tk.LEFT)
         ttk.Button(panel, text="Click neutral patch", command=self._arm_neutral_pick).pack(side=tk.LEFT)
@@ -696,9 +697,15 @@ class ZoomableCfaViewer(tk.Tk):
         for name, gain in zip(("WB R", "WB G", "WB B"), wb):
             self.camera_fields[name].set(f"{gain:.6g}")
         self.camera_enabled.set(meta["recognized"])
-        self._auto_camera(balance=False)
+        self._auto_exposure()
 
-    def _auto_camera(self, balance=True):
+    def _auto_exposure(self):
+        self._auto_camera(balance=False, exposure=True)
+
+    def _auto_white_balance(self):
+        self._auto_camera(balance=True, exposure=False)
+
+    def _auto_camera(self, *, balance, exposure):
         try:
             black = float(self.camera_fields["Black"].get())
             white = float(self.camera_fields["White"].get())
@@ -717,7 +724,8 @@ class ZoomableCfaViewer(tk.Tk):
             if balance:
                 for name, value in zip(("WB R", "WB G", "WB B"), (green / means[0], 1, green / means[3])):
                     self.camera_fields[name].set(f"{value:.5g}")
-            self.camera_fields["EV"].set(f"{np.clip(np.log2(0.18 / green), -12, 12):.4g}")
+            if exposure:
+                self.camera_fields["EV"].set(f"{np.clip(np.log2(0.18 / green), -12, 12):.4g}")
         except (ValueError, ZeroDivisionError):
             pass
         if hasattr(self, "canvas"):

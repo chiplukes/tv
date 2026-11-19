@@ -220,5 +220,6 @@ On open, camera preview takes residual white balance only from `color_matrix.wb`
 (identity if absent). `wb_already_applied`, `channel_gains_already_applied`, and their
 legacy `*_applied` names are informational: their gains are never multiplied into
 pixels again. Automatic exposure still runs on open, but gray-world balance runs
-only when **Auto WB / exposure** is pressed. **Click neutral patch** and manual WB
+only when **Auto white balance** is pressed. **Auto exposure** changes only EV;
+**Auto white balance** changes only the RGB gains. **Click neutral patch** and manual WB
 fields also explicitly override the residual balance.

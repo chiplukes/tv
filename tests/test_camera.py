@@ -56,7 +56,32 @@ class CameraTests(unittest.TestCase):
             actual = [float(viewer.camera_fields[name].get()) for name in ("WB R", "WB G", "WB B")]
             np.testing.assert_allclose(actual, expected)
             np.testing.assert_array_equal(viewer.camera_matrix, np.eye(3))
-            self.assertEqual(calls[-1], {"balance": False})
+            self.assertEqual(calls[-1], {"balance": False, "exposure": True})
+
+    def test_auto_buttons_change_only_their_own_fields(self):
+        interpreter = tk.Tcl()
+        viewer = ZoomableCfaViewer.__new__(ZoomableCfaViewer)
+        values = {"Black": "0", "White": "10000", "WB R": "1.2", "WB G": "1", "WB B": "1.3", "EV": "5"}
+        viewer.camera_fields = {name: tk.StringVar(master=interpreter, value=value) for name, value in values.items()}
+        viewer.full_rows = viewer.full_cols = 32
+        viewer.data = np.empty((32, 32))
+        viewer.data[0::2, 0::2] = 500
+        viewer.data[0::2, 1::2] = 1000
+        viewer.data[1::2, 0::2] = 1000
+        viewer.data[1::2, 1::2] = 2000
+        viewer.get_bayer_offsets = lambda: ((0, 0), (0, 1), (1, 0), (1, 1))
+        viewer.canvas = None
+        viewer.redraw = lambda: None
+        viewer._auto_exposure()
+        self.assertAlmostEqual(float(viewer.camera_fields["EV"].get()), np.log2(1.8), places=4)
+        for name in ("WB R", "WB G", "WB B"):
+            self.assertEqual(viewer.camera_fields[name].get(), values[name])
+        viewer.camera_fields["EV"].set("3.25")
+        viewer._auto_white_balance()
+        self.assertEqual(viewer.camera_fields["EV"].get(), "3.25")
+        np.testing.assert_allclose(
+            [float(viewer.camera_fields[n].get()) for n in ("WB R", "WB G", "WB B")], [2, 1, 0.5]
+        )
 
     def test_neutral_patch_and_readout(self):
         planes = [np.array([value, 65535, 0]) for value in (1000, 2000, 2000, 4000)]
